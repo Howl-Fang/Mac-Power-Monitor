@@ -1,3 +1,9 @@
 /target
 /power-*.tsv
 /power-report-*.pdf
+
+# mac
+.DS_Store
+
+# win
+desktop.ini
