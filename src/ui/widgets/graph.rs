@@ -1,4 +1,4 @@
-use ratatui::layout::Rect;
+use ratatui::layout::{Alignment, Constraint, Layout, Rect};
 use ratatui::style::{Color, Style};
 use ratatui::symbols::Marker;
 use ratatui::text::{Line, Span};
@@ -14,10 +14,32 @@ pub struct GraphSeries<'a> {
     pub data: Vec<(f64, f64)>,
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum AxisUnit {
+    #[default]
+    Power,
+    Percent,
+}
+
 #[derive(Clone, Copy, Default)]
-pub struct YRange {
-    pub min: Option<f64>,
-    pub max: Option<f64>,
+pub struct GraphOptions {
+    pub y_min: Option<f64>,
+    pub y_max: Option<f64>,
+    pub unit: AxisUnit,
+}
+
+impl GraphOptions {
+    pub fn power() -> Self {
+        Self::default()
+    }
+
+    pub fn percent() -> Self {
+        Self {
+            y_min: Some(0.0),
+            y_max: Some(100.0),
+            unit: AxisUnit::Percent,
+        }
+    }
 }
 
 pub fn render_graph(
@@ -25,7 +47,7 @@ pub fn render_graph(
     area: Rect,
     title: &str,
     series: &[GraphSeries<'_>],
-    y_range: YRange,
+    options: GraphOptions,
     theme: &Theme,
     ascii: bool,
 ) {
@@ -41,7 +63,7 @@ pub fn render_graph(
         return;
     }
 
-    let (ymin, ymax) = range(series, y_range.min, y_range.max);
+    let (ymin, ymax) = range(series, options.y_min, options.y_max);
     if series.iter().all(|s| s.data.is_empty()) {
         frame.render_widget(
             Paragraph::new(Span::styled("waiting for samples...", theme.dim_text())),
@@ -50,8 +72,22 @@ pub fn render_graph(
         return;
     }
 
+    let labels = axis_labels(ymin, ymax, options.unit);
+    let label_width = labels
+        .iter()
+        .map(|label| label.chars().count())
+        .max()
+        .unwrap_or(0) as u16;
+    let mut plot_area = inner;
+    if inner.height >= 3 && inner.width > label_width + 6 {
+        let [axis_area, plot] =
+            Layout::horizontal([Constraint::Length(label_width), Constraint::Min(0)]).areas(inner);
+        render_axis_labels(frame, axis_area, &labels, theme);
+        plot_area = plot;
+    }
+
     if ascii {
-        render_ascii(frame, inner, series, ymin, ymax, theme);
+        render_ascii(frame, plot_area, series, ymin, ymax, theme);
     } else {
         let canvas = Canvas::default()
             .marker(Marker::Braille)
@@ -70,7 +106,43 @@ pub fn render_graph(
                     }
                 }
             });
-        frame.render_widget(canvas, inner);
+        frame.render_widget(canvas, plot_area);
+    }
+}
+
+fn axis_labels(ymin: f64, ymax: f64, unit: AxisUnit) -> [String; 3] {
+    [
+        axis_label(ymax, unit),
+        axis_label((ymin + ymax) / 2.0, unit),
+        axis_label(ymin, unit),
+    ]
+}
+
+fn axis_label(value: f64, unit: AxisUnit) -> String {
+    if !value.is_finite() {
+        return "n/a".to_string();
+    }
+    match unit {
+        AxisUnit::Percent => format!("{value:.0}%"),
+        AxisUnit::Power if value.abs() < 1.0 => format!("{:.0}mW", value * 1000.0),
+        AxisUnit::Power if value.abs() < 10.0 => format!("{value:.1}W"),
+        AxisUnit::Power => format!("{value:.0}W"),
+    }
+}
+
+fn render_axis_labels(frame: &mut Frame, area: Rect, labels: &[String; 3], theme: &Theme) {
+    let rows = [
+        Rect::new(area.x, area.y, area.width, 1),
+        Rect::new(area.x, area.y + area.height / 2, area.width, 1),
+        Rect::new(area.x, area.y + area.height - 1, area.width, 1),
+    ];
+    for (row, label) in rows.into_iter().zip(labels) {
+        frame.render_widget(
+            Paragraph::new(label.as_str())
+                .style(theme.dim_text())
+                .alignment(Alignment::Right),
+            row,
+        );
     }
 }
 
@@ -94,8 +166,10 @@ fn range(series: &[GraphSeries<'_>], y_min: Option<f64>, y_max: Option<f64>) -> 
         hi = lo + 1.0;
     }
     let pad = (hi - lo) * 0.08;
-    hi += pad;
-    if lo < 0.0 {
+    if y_max.is_none() {
+        hi += pad;
+    }
+    if y_min.is_none() && lo < 0.0 {
         lo -= pad;
     }
     (lo, hi)
@@ -181,4 +255,34 @@ pub fn render_sparkline(
         .style(Style::default().fg(color));
     frame.render_widget(spark, area);
     let _ = theme;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn formats_power_axis_labels() {
+        assert_eq!(axis_label(0.0, AxisUnit::Power), "0mW");
+        assert_eq!(axis_label(0.5, AxisUnit::Power), "500mW");
+        assert_eq!(axis_label(5.25, AxisUnit::Power), "5.2W");
+        assert_eq!(axis_label(42.4, AxisUnit::Power), "42W");
+        assert_eq!(axis_label(f64::NAN, AxisUnit::Power), "n/a");
+    }
+
+    #[test]
+    fn formats_percent_axis_labels() {
+        assert_eq!(axis_label(100.0, AxisUnit::Percent), "100%");
+        assert_eq!(axis_label(50.0, AxisUnit::Percent), "50%");
+    }
+
+    #[test]
+    fn explicit_bounds_do_not_get_headroom() {
+        let series = vec![GraphSeries {
+            label: "battery",
+            color: Color::Reset,
+            data: vec![(0.0, 42.0), (1.0, 73.0)],
+        }];
+        assert_eq!(range(&series, Some(0.0), Some(100.0)), (0.0, 100.0));
+    }
 }

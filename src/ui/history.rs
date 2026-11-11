@@ -8,7 +8,7 @@ use crate::app::{window_label, Action, App};
 use crate::history::{series_avg, Summary};
 use crate::model::{fmt_power_val, fmt_wh, Sample};
 use crate::ui::theme::Theme;
-use crate::ui::widgets::graph::{self, GraphSeries, YRange};
+use crate::ui::widgets::graph::{self, GraphOptions, GraphSeries};
 
 pub fn render(frame: &mut Frame, area: Rect, app: &mut App, theme: &Theme) {
     let [buttons, main, legend, battery_area, stats] = Layout::vertical([
@@ -60,7 +60,7 @@ pub fn render(frame: &mut Frame, area: Rect, app: &mut App, theme: &Theme) {
         main,
         &format!("Power history ({})", window_label(app.window_secs)),
         &series,
-        YRange::default(),
+        GraphOptions::power(),
         theme,
         app.ascii,
     );
@@ -79,10 +79,7 @@ pub fn render(frame: &mut Frame, area: Rect, app: &mut App, theme: &Theme) {
         battery_area,
         "Battery charge (%)",
         &battery_series,
-        YRange {
-            min: Some(0.0),
-            max: Some(100.0),
-        },
+        GraphOptions::percent(),
         theme,
         app.ascii,
     );
