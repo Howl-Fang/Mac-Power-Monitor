@@ -167,12 +167,16 @@ impl SmcClient {
             pstr_w: self.read_power_w(b"PSTR"),
             ppbr_w: self.read_power_w(b"PPBR"),
             pdtr_w: self.read_power_w(b"PDTR"),
+            backlight_w: self
+                .read_power_w(b"PBLR")
+                .or_else(|| self.read_power_w(b"PDBR")),
         }
     }
 
     pub fn probe(&mut self) -> Vec<SmcProbe> {
-        const KEYS: [&[u8; 4]; 8] = [
-            b"PSTR", b"PPBR", b"PDTR", b"PCPT", b"PC0R", b"PG0R", b"PBTW", b"PBLM",
+        const KEYS: [&[u8; 4]; 10] = [
+            b"PSTR", b"PPBR", b"PDTR", b"PBLR", b"PDBR", b"PCPT", b"PC0R", b"PG0R", b"PBTW",
+            b"PBLM",
         ];
         let mut out = Vec::new();
         for key in KEYS {

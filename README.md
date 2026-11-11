@@ -153,6 +153,7 @@ macpower [OPTIONS]
 - `PSTR`：系统功耗（W）。
 - `PPBR`：电池相关电源轨（W）。不同 SoC/固件上的含义可能不同；实际电池功率优先使用 IOKit 的 `V × I`。
 - `PDTR`：DC 输入功率（W）。
+- `PBLR` / `PDBR`：屏幕背光功耗（W，若该机型提供）。该值会随亮度明显变化。
 
 SMC key 是 4 字节 FourCC；`flt` 浮点值在 Apple Silicon 上为小端，同时兼容 Intel 的大端解释。不存在的 key 会被跳过，不影响其他数据源。
 
@@ -165,7 +166,7 @@ SMC key 是 4 字节 FourCC；`flt` 浮点值在 Apple Silicon 上为小端，�
 - CPU：优先 `CPU Energy`；否则 `ECPU + PCPU`；再否则累加逐核 channel。
 - 逐核：匹配 `ECPU0..N` / `PCPU0..N`，排除 `_SRAM`、`DTL`、`ECPM` 等子通道。
 - GPU：优先 `GPU`；若其为 0 而 `GPU Energy` 有值，则使用更精细的 `GPU Energy`，两者不会相加。
-- 其他：`ANE`、`DRAM`、`DISP + DISPEXT`。
+- 其他：`ANE`、`DRAM`、`DISP + DISPEXT`。`DISP` 是 SoC 显示控制器功耗；若 SMC 提供 `PBLR` / `PDBR`，会再加上屏幕背光功耗，因此 `DISPLAY` 会随亮度变化。
 - 辅助功耗轨：`ISP`、`AVE`、`MSR`、`VDEC`、`SOC_AON`、`SOC_REST`、PCIe 相关通道；`OTHER` 只是这些轨道的部分和，不是整机总功耗。
 - `AMCC`、`DCS` 可能与其他通道重叠，仅在 Power 页单独显示，不并入 `OTHER`。
 - 子通道（`_SRAM`、`DTL`、Power Zone Filter 等）会过滤，避免重复计数。

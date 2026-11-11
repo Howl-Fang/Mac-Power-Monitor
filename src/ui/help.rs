@@ -93,7 +93,7 @@ pub fn render(frame: &mut Frame, area: Rect, app: &mut App, theme: &Theme) {
     lines.push(line(
         "SMC: ",
         bold,
-        "PSTR (system power), PPBR (battery rail; hardware-dependent), PDTR (DC input). Read from AppleSMC without root.",
+        "PSTR (system power), PPBR (battery rail; hardware-dependent), PDTR (DC input), PBLR/PDBR (display backlight when present).",
         theme.text(),
     ));
     lines.push(line(
@@ -112,6 +112,12 @@ pub fn render(frame: &mut Frame, area: Rect, app: &mut App, theme: &Theme) {
         "Components: ",
         bold,
         "IOReport Energy Model energy counters, diffed over the sample interval and converted to watts.",
+        theme.text(),
+    ));
+    lines.push(line(
+        "Display: ",
+        bold,
+        "IOReport DISP/DISPEXT is the SoC display controller; SMC PBLR/PDBR adds panel backlight power when the Mac exposes it.",
         theme.text(),
     ));
     lines.push(line(

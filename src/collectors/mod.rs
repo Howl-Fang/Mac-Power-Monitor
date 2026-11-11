@@ -143,6 +143,7 @@ impl RealSampler {
             .map(|io| io.sample())
             .unwrap_or_default();
         let comp = ComponentPower::from_rails(&rails);
+        let display_w = display_power(comp.display_w, smc_values.backlight_w);
 
         let source = if battery.present {
             battery.source
@@ -175,7 +176,7 @@ impl RealSampler {
             gpu_w: comp.gpu_w,
             ane_w: comp.ane_w,
             dram_w: comp.dram_w,
-            display_w: comp.display_w,
+            display_w,
             other_w: comp.other_w,
             source,
         };
@@ -343,6 +344,7 @@ impl DemoSampler {
             pstr_w: Some(system_w),
             ppbr_w: Some(-battery_w),
             pdtr_w: Some(0.0),
+            backlight_w: Some(display),
         };
         let battery = BatteryInfo {
             present: true,
@@ -482,6 +484,18 @@ impl DemoSampler {
     }
 }
 
+fn display_power(controller_w: Option<f32>, backlight_w: Option<f32>) -> Option<f32> {
+    match (
+        controller_w,
+        backlight_w.filter(|w| w.is_finite() && *w >= 0.0),
+    ) {
+        (Some(controller), Some(backlight)) => Some(controller + backlight),
+        (Some(controller), None) => Some(controller),
+        (None, Some(backlight)) => Some(backlight),
+        (None, None) => None,
+    }
+}
+
 fn pick_system_power(smc: &SmcValues, battery: &BatteryInfo, source: PowerSource) -> Option<f32> {
     smc.pstr_w
         .filter(|w| *w > 0.0)
@@ -531,6 +545,7 @@ fn add_smc_rails(rails: &mut Vec<RailValue>, smc: &SmcValues) {
         ("PSTR", smc.pstr_w),
         ("PPBR", smc.ppbr_w),
         ("PDTR", smc.pdtr_w),
+        ("Backlight (SMC)", smc.backlight_w),
     ] {
         if let Some(w) = value {
             rails.push(RailValue {
@@ -607,6 +622,7 @@ mod tests {
             pstr_w: None,
             ppbr_w: Some(4.5),
             pdtr_w: None,
+            backlight_w: None,
         };
         let battery = BatteryInfo {
             present: true,
@@ -647,11 +663,20 @@ mod tests {
     }
 
     #[test]
+    fn display_power_adds_backlight_rail() {
+        assert_eq!(display_power(Some(0.08), Some(2.5)), Some(2.58));
+        assert_eq!(display_power(Some(0.08), None), Some(0.08));
+        assert_eq!(display_power(None, Some(2.5)), Some(2.5));
+        assert_eq!(display_power(None, Some(f32::NAN)), None);
+    }
+
+    #[test]
     fn system_power_prefers_pstr() {
         let smc = SmcValues {
             pstr_w: Some(3.8),
             ppbr_w: Some(4.5),
             pdtr_w: None,
+            backlight_w: None,
         };
         let battery = BatteryInfo {
             present: true,

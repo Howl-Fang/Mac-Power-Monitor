@@ -50,6 +50,7 @@ pub struct SmcValues {
     pub pstr_w: Option<f32>,
     pub ppbr_w: Option<f32>,
     pub pdtr_w: Option<f32>,
+    pub backlight_w: Option<f32>,
 }
 
 #[derive(Clone, Debug)]
