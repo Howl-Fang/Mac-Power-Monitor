@@ -32,19 +32,19 @@ pub fn render(frame: &mut Frame, area: Rect, app: &mut App, theme: &Theme) {
     };
     let warming = app.history.len() <= 1 && snapshot.sample.cpu_w.is_none();
 
-    // At >=26 content rows there is room for a real power-history chart plus
+    // At >=25 content rows there is room for a real power-history chart plus
     // one-line histories for the battery and each component. Smaller terminals
     // keep the compact snapshot-only layout.
-    if area.height >= 26 && area.width >= 80 {
+    if area.height >= 25 && area.width >= 80 {
         let [system, battery, history, comps, cores] = Layout::vertical([
-            Constraint::Length(5),
+            Constraint::Length(4),
             Constraint::Length(5),
             Constraint::Min(5),
             Constraint::Length(8),
             Constraint::Length(3),
         ])
         .areas(area);
-        render_system(frame, system, app, theme);
+        render_system(frame, system, app, theme, false);
         render_battery(frame, battery, app, theme, true);
         render_history(frame, history, app, theme);
         render_components(frame, comps, app, theme, warming, true);
@@ -57,14 +57,14 @@ pub fn render(frame: &mut Frame, area: Rect, app: &mut App, theme: &Theme) {
             Constraint::Length(3),
         ])
         .areas(area);
-        render_system(frame, system, app, theme);
+        render_system(frame, system, app, theme, true);
         render_battery(frame, battery, app, theme, false);
         render_components(frame, comps, app, theme, warming, false);
         render_cores(frame, cores, &snapshot.sample, theme, warming);
     }
 }
 
-fn render_system(frame: &mut Frame, area: Rect, app: &App, theme: &Theme) {
+fn render_system(frame: &mut Frame, area: Rect, app: &App, theme: &Theme, show_sparkline: bool) {
     let block = Block::bordered()
         .title(Line::from(vec![Span::styled(
             "SYSTEM POWER",
@@ -73,15 +73,12 @@ fn render_system(frame: &mut Frame, area: Rect, app: &App, theme: &Theme) {
         .border_style(theme.border_style());
     let inner = block.inner(area);
     frame.render_widget(block, area);
-    if inner.height < 3 {
+    if inner.height < 2 {
         return;
     }
-    let [line1, line2, line3] = Layout::vertical([
-        Constraint::Length(1),
-        Constraint::Length(1),
-        Constraint::Length(1),
-    ])
-    .areas(inner);
+    let line1 = Rect::new(inner.x, inner.y, inner.width, 1);
+    let line2 = Rect::new(inner.x, inner.y + 1, inner.width, 1);
+    let line3 = Rect::new(inner.x, inner.y + 2, inner.width, 1);
 
     let Some(snapshot) = app.snapshot.as_ref() else {
         return;
@@ -111,18 +108,20 @@ fn render_system(frame: &mut Frame, area: Rect, app: &App, theme: &Theme) {
     ]);
     frame.render_widget(Paragraph::new(line).style(theme.text()), line2);
 
-    let samples = app.history.window(Duration::from_secs(60));
-    let take = line3.width as usize;
-    let values: Vec<u64> = samples
-        .iter()
-        .rev()
-        .take(take)
-        .rev()
-        .filter_map(|s| s.system_w)
-        .map(|w| (w.max(0.0) * 1000.0) as u64)
-        .collect();
-    let max = values.iter().copied().max().unwrap_or(1);
-    graph::render_sparkline(frame, line3, &values, max, theme.accent, app.ascii);
+    if show_sparkline && inner.height >= 3 {
+        let samples = app.history.window(Duration::from_secs(60));
+        let take = line3.width as usize;
+        let values: Vec<u64> = samples
+            .iter()
+            .rev()
+            .take(take)
+            .rev()
+            .filter_map(|s| s.system_w)
+            .map(|w| (w.max(0.0) * 1000.0) as u64)
+            .collect();
+        let max = values.iter().copied().max().unwrap_or(1);
+        graph::render_sparkline(frame, line3, &values, max, theme.accent, app.ascii);
+    }
 }
 
 fn render_battery(frame: &mut Frame, area: Rect, app: &App, theme: &Theme, expanded: bool) {

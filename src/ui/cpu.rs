@@ -3,14 +3,14 @@ use std::time::Duration;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Gauge, Paragraph};
+use ratatui::widgets::{Block, Paragraph};
 use ratatui::Frame;
 
 use crate::app::App;
 use crate::history::series_avg;
 use crate::model::{fmt_power, Sample};
 use crate::ui::theme::Theme;
-use crate::ui::widgets::bar::render_bar_row;
+use crate::ui::widgets::bar::{render_bar_row, render_meter_bar};
 use crate::ui::widgets::graph::{self, GraphOptions, GraphSeries};
 
 pub fn render(frame: &mut Frame, area: Rect, app: &mut App, theme: &Theme) {
@@ -194,13 +194,17 @@ fn render_core_panel(
             Paragraph::new(format!("{kind}{idx}")).style(Style::default().fg(color)),
             label_area,
         );
-        let gauge = Gauge::default()
-            .ratio((*w / max).clamp(0.0, 1.0) as f64)
-            .gauge_style(Style::default().fg(color))
-            .use_unicode(true);
-        frame.render_widget(gauge, bar_area);
+        let ratio = (*w / max).clamp(0.0, 1.0) as f64;
+        render_meter_bar(
+            frame,
+            bar_area,
+            ratio,
+            color,
+            &format!("{:.0}%", ratio * 100.0),
+            theme,
+        );
         frame.render_widget(
-            Paragraph::new(fmt_power(Some(*w))).style(theme.text()),
+            Paragraph::new(format!(" {}", fmt_power(Some(*w)))).style(theme.text()),
             value_area,
         );
 

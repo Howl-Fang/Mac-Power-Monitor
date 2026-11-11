@@ -489,6 +489,9 @@ mod tests {
         let compact = draw(&mut app, 80, 24, &theme);
         assert!(!compact.contains("POWER HISTORY"));
 
+        let minimum = draw(&mut app, 80, 29, &theme);
+        assert!(minimum.contains("POWER HISTORY"));
+
         let text = draw(&mut app, 100, 34, &theme);
         assert!(text.contains("POWER HISTORY"));
         assert!(text.contains("BAT% history"));
