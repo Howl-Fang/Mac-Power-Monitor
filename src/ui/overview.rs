@@ -100,7 +100,7 @@ fn render_system(frame: &mut Frame, area: Rect, app: &App, theme: &Theme) {
         .map(|w| (w.max(0.0) * 1000.0) as u64)
         .collect();
     let max = values.iter().copied().max().unwrap_or(1);
-    graph::render_sparkline(frame, line3, &values, max, theme.accent, theme);
+    graph::render_sparkline(frame, line3, &values, max, theme.accent, app.ascii);
 }
 
 fn render_battery(frame: &mut Frame, area: Rect, app: &App, theme: &Theme) {

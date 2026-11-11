@@ -246,15 +246,38 @@ pub fn render_sparkline(
     values: &[u64],
     max: u64,
     color: Color,
-    theme: &Theme,
+    ascii: bool,
 ) {
+    if area.width == 0 || area.height == 0 {
+        return;
+    }
+    if ascii {
+        let text = ascii_sparkline(values, max, area.width as usize);
+        frame.render_widget(
+            Paragraph::new(Span::styled(text, Style::default().fg(color))),
+            area,
+        );
+        return;
+    }
     use ratatui::widgets::Sparkline;
     let spark = Sparkline::default()
         .data(values)
         .max(max.max(1))
         .style(Style::default().fg(color));
     frame.render_widget(spark, area);
-    let _ = theme;
+}
+
+fn ascii_sparkline(values: &[u64], max: u64, width: usize) -> String {
+    let chars = [' ', '.', ':', '-', '=', '+', '*', '#'];
+    let max = max.max(1);
+    let mut out = vec![' '; width];
+    let start = width.saturating_sub(values.len());
+    for (i, value) in values.iter().rev().take(width).rev().enumerate() {
+        let t = (*value as f64 / max as f64).clamp(0.0, 1.0);
+        let idx = (t * (chars.len() - 1) as f64).round() as usize;
+        out[start + i] = chars[idx.min(chars.len() - 1)];
+    }
+    out.into_iter().collect()
 }
 
 #[cfg(test)]
@@ -274,6 +297,14 @@ mod tests {
     fn formats_percent_axis_labels() {
         assert_eq!(axis_label(100.0, AxisUnit::Percent), "100%");
         assert_eq!(axis_label(50.0, AxisUnit::Percent), "50%");
+    }
+
+    #[test]
+    fn ascii_sparkline_scales_and_pads() {
+        assert_eq!(ascii_sparkline(&[0], 100, 1), " ");
+        assert_eq!(ascii_sparkline(&[100], 100, 1), "#");
+        assert_eq!(ascii_sparkline(&[50], 100, 1), "=");
+        assert_eq!(ascii_sparkline(&[50, 100], 100, 3), " =#");
     }
 
     #[test]

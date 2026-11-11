@@ -154,6 +154,6 @@ fn render_core_panel(
             .map(|v| (v.max(0.0) * 1000.0) as u64)
             .collect();
         let spark_max = values.iter().copied().max().unwrap_or(1);
-        graph::render_sparkline(frame, spark_area, &values, spark_max, color, theme);
+        graph::render_sparkline(frame, spark_area, &values, spark_max, color, app.ascii);
     }
 }
