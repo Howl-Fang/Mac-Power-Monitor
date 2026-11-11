@@ -1,0 +1,26 @@
+[package]
+name = "macpower"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.88"
+description = "A btop-style macOS power monitor"
+
+[dependencies]
+ratatui = "0.30.2"
+crossterm = "0.29"
+printpdf = { version = "0.12.8", default-features = false }
+core-foundation-sys = "0.8.7"
+libloading = "0.9"
+clap = { version = "4.6", features = ["derive"] }
+chrono = { version = "0.4.45", default-features = false, features = ["clock", "std"] }
+serde_json = "1.0"
+anyhow = "1.0"
+signal-hook = "0.4"
+
+[dev-dependencies]
+lopdf = "0.44"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = true
