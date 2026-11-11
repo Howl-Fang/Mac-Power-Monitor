@@ -26,6 +26,8 @@ pub struct GraphOptions {
     pub y_min: Option<f64>,
     pub y_max: Option<f64>,
     pub unit: AxisUnit,
+    /// Append a compact colored legend to the block title.
+    pub legend_in_title: bool,
 }
 
 impl GraphOptions {
@@ -38,6 +40,7 @@ impl GraphOptions {
             y_min: Some(0.0),
             y_max: Some(100.0),
             unit: AxisUnit::Percent,
+            legend_in_title: false,
         }
     }
 }
@@ -54,8 +57,19 @@ pub fn render_graph(
     if area.width < 4 || area.height < 3 {
         return;
     }
+    let mut title_spans = vec![Span::styled(title.to_string(), theme.title())];
+    if options.legend_in_title {
+        let marker = if ascii { '*' } else { '■' };
+        for s in series {
+            title_spans.push(Span::raw(" "));
+            title_spans.push(Span::styled(
+                format!("{marker}{}", s.label),
+                Style::default().fg(s.color),
+            ));
+        }
+    }
     let block = Block::bordered()
-        .title(Span::styled(title.to_string(), theme.title()))
+        .title(Line::from(title_spans))
         .border_style(theme.border_style());
     let inner = block.inner(area);
     frame.render_widget(block, area);

@@ -479,6 +479,24 @@ mod tests {
     }
 
     #[test]
+    fn overview_expands_with_history_when_tall() {
+        let theme = Theme::new(false);
+        let mut app = test_app();
+        app.tick();
+        app.tick();
+        app.tab = Tab::Overview;
+
+        let compact = draw(&mut app, 80, 24, &theme);
+        assert!(!compact.contains("POWER HISTORY"));
+
+        let text = draw(&mut app, 100, 34, &theme);
+        assert!(text.contains("POWER HISTORY"));
+        assert!(text.contains("BAT% history"));
+        assert!(text.contains("COMPONENTS"));
+        assert!(text.contains("CPU CORES"));
+    }
+
+    #[test]
     fn renders_ascii_and_mono_modes() {
         let theme = Theme::new(true);
         let mut app = test_app();

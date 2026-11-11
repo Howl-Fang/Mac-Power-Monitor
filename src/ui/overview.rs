@@ -1,29 +1,26 @@
 use std::time::Duration;
 
 use ratatui::layout::{Constraint, Layout, Rect};
-use ratatui::style::Style;
+use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Paragraph};
 use ratatui::Frame;
 
 use crate::app::App;
+use crate::history::series_avg;
 use crate::model::{
     fmt_battery_current, fmt_battery_power, fmt_duration_min, fmt_pct, fmt_power, fmt_temp,
-    fmt_voltage,
+    fmt_voltage, Sample,
 };
 use crate::ui::theme::Theme;
 use crate::ui::widgets::bar::{render_bar_row, render_battery_gauge};
-use crate::ui::widgets::graph;
+use crate::ui::widgets::graph::{self, GraphOptions, GraphSeries};
+
+const OVERVIEW_WINDOW: Duration = Duration::from_secs(60);
+
+type ComponentSpec<'a> = (&'a str, f32, Color, fn(&Sample) -> Option<f32>);
 
 pub fn render(frame: &mut Frame, area: Rect, app: &mut App, theme: &Theme) {
-    let [system, battery, comps, cores] = Layout::vertical([
-        Constraint::Length(5),
-        Constraint::Length(4),
-        Constraint::Length(8),
-        Constraint::Length(3),
-    ])
-    .areas(area);
-
     let Some(snapshot) = app.snapshot.as_ref() else {
         frame.render_widget(
             Paragraph::new("Waiting for the first sample...")
@@ -33,13 +30,38 @@ pub fn render(frame: &mut Frame, area: Rect, app: &mut App, theme: &Theme) {
         );
         return;
     };
-    let sample = &snapshot.sample;
+    let warming = app.history.len() <= 1 && snapshot.sample.cpu_w.is_none();
 
-    let warming = app.history.len() <= 1 && sample.cpu_w.is_none();
-    render_system(frame, system, app, theme);
-    render_battery(frame, battery, app, theme);
-    render_components(frame, comps, sample, theme, warming);
-    render_cores(frame, cores, sample, theme, warming);
+    // At >=26 content rows there is room for a real power-history chart plus
+    // one-line histories for the battery and each component. Smaller terminals
+    // keep the compact snapshot-only layout.
+    if area.height >= 26 && area.width >= 80 {
+        let [system, battery, history, comps, cores] = Layout::vertical([
+            Constraint::Length(5),
+            Constraint::Length(5),
+            Constraint::Min(5),
+            Constraint::Length(8),
+            Constraint::Length(3),
+        ])
+        .areas(area);
+        render_system(frame, system, app, theme);
+        render_battery(frame, battery, app, theme, true);
+        render_history(frame, history, app, theme);
+        render_components(frame, comps, app, theme, warming, true);
+        render_cores(frame, cores, &snapshot.sample, theme, warming);
+    } else {
+        let [system, battery, comps, cores] = Layout::vertical([
+            Constraint::Length(5),
+            Constraint::Length(4),
+            Constraint::Length(8),
+            Constraint::Length(3),
+        ])
+        .areas(area);
+        render_system(frame, system, app, theme);
+        render_battery(frame, battery, app, theme, false);
+        render_components(frame, comps, app, theme, warming, false);
+        render_cores(frame, cores, &snapshot.sample, theme, warming);
+    }
 }
 
 fn render_system(frame: &mut Frame, area: Rect, app: &App, theme: &Theme) {
@@ -103,7 +125,7 @@ fn render_system(frame: &mut Frame, area: Rect, app: &App, theme: &Theme) {
     graph::render_sparkline(frame, line3, &values, max, theme.accent, app.ascii);
 }
 
-fn render_battery(frame: &mut Frame, area: Rect, app: &App, theme: &Theme) {
+fn render_battery(frame: &mut Frame, area: Rect, app: &App, theme: &Theme, expanded: bool) {
     let block = Block::bordered()
         .title(Line::from(vec![Span::styled("BATTERY", theme.title())]))
         .border_style(theme.border_style());
@@ -112,8 +134,9 @@ fn render_battery(frame: &mut Frame, area: Rect, app: &App, theme: &Theme) {
     if inner.height < 2 {
         return;
     }
-    let [line1, line2] =
-        Layout::vertical([Constraint::Length(1), Constraint::Length(1)]).areas(inner);
+    let line1 = Rect::new(inner.x, inner.y, inner.width, 1);
+    let line2 = Rect::new(inner.x, inner.y + 1, inner.width, 1);
+    let line3 = Rect::new(inner.x, inner.y + 2, inner.width, 1);
     let Some(snapshot) = app.snapshot.as_ref() else {
         return;
     };
@@ -164,14 +187,80 @@ fn render_battery(frame: &mut Frame, area: Rect, app: &App, theme: &Theme) {
             .unwrap_or_else(|| "n/a".into())
     );
     frame.render_widget(Paragraph::new(details).style(theme.text()), line2);
+
+    if expanded && inner.height >= 3 {
+        let [label_area, spark_area] =
+            Layout::horizontal([Constraint::Length(14), Constraint::Min(0)]).areas(line3);
+        frame.render_widget(
+            Paragraph::new("BAT% history").style(theme.dim_text()),
+            label_area,
+        );
+        let values: Vec<u64> = app
+            .history
+            .window(OVERVIEW_WINDOW)
+            .iter()
+            .rev()
+            .take(spark_area.width as usize)
+            .rev()
+            .filter_map(|s| s.battery_pct)
+            .map(|pct| pct.clamp(0.0, 100.0).round() as u64)
+            .collect();
+        graph::render_sparkline(frame, spark_area, &values, 100, theme.green, app.ascii);
+    }
+}
+
+fn render_history(frame: &mut Frame, area: Rect, app: &App, theme: &Theme) {
+    let samples = app.history.window(OVERVIEW_WINDOW);
+    let width = ((area.width.saturating_sub(2) as usize) * 2).max(60);
+    let series = vec![
+        GraphSeries {
+            label: "System",
+            color: theme.accent,
+            data: series_avg(&samples, width, |s| s.system_w),
+        },
+        GraphSeries {
+            label: "CPU",
+            color: theme.green,
+            data: series_avg(&samples, width, |s| s.cpu_w),
+        },
+        GraphSeries {
+            label: "GPU",
+            color: theme.orange,
+            data: series_avg(&samples, width, |s| s.gpu_w),
+        },
+        GraphSeries {
+            label: "DRAM",
+            color: theme.red,
+            data: series_avg(&samples, width, |s| s.dram_w),
+        },
+        GraphSeries {
+            label: "Display",
+            color: theme.yellow,
+            data: series_avg(&samples, width, |s| s.display_w),
+        },
+    ];
+    let options = GraphOptions {
+        legend_in_title: true,
+        ..GraphOptions::power()
+    };
+    graph::render_graph(
+        frame,
+        area,
+        "POWER HISTORY (60s)",
+        &series,
+        options,
+        theme,
+        app.ascii,
+    );
 }
 
 fn render_components(
     frame: &mut Frame,
     area: Rect,
-    sample: &crate::model::Sample,
+    app: &App,
     theme: &Theme,
     warming: bool,
+    show_sparklines: bool,
 ) {
     let block = Block::bordered()
         .title(Line::from(vec![Span::styled("COMPONENTS", theme.title())]))
@@ -181,6 +270,10 @@ fn render_components(
     if inner.height < 1 {
         return;
     }
+    let Some(snapshot) = app.snapshot.as_ref() else {
+        return;
+    };
+    let sample = &snapshot.sample;
     if sample.cpu_w.is_none() && sample.gpu_w.is_none() && sample.dram_w.is_none() {
         let message = if warming {
             "Warming up IOReport counters (needs two samples)..."
@@ -214,28 +307,47 @@ fn render_components(
         (Some(e), Some(p)) => format!("CPU (E {} / P {})", fmt_power(Some(e)), fmt_power(Some(p))),
         _ => "CPU".to_string(),
     };
-    render_bar_row(
-        frame,
-        rows[0],
-        &cpu_label,
-        values[0],
-        max,
-        theme.green,
-        theme,
-    );
-    render_bar_row(frame, rows[1], "GPU", values[1], max, theme.orange, theme);
-    render_bar_row(frame, rows[2], "ANE", values[2], max, theme.purple, theme);
-    render_bar_row(frame, rows[3], "DRAM", values[3], max, theme.red, theme);
-    render_bar_row(
-        frame,
-        rows[4],
-        "DISPLAY",
-        values[4],
-        max,
-        theme.yellow,
-        theme,
-    );
-    render_bar_row(frame, rows[5], "OTHER", values[5], max, theme.dim, theme);
+    let specs: [ComponentSpec<'_>; 6] = [
+        (&cpu_label, values[0], theme.green, |s| s.cpu_w),
+        ("GPU", values[1], theme.orange, |s| s.gpu_w),
+        ("ANE", values[2], theme.purple, |s| s.ane_w),
+        ("DRAM", values[3], theme.red, |s| s.dram_w),
+        ("DISPLAY", values[4], theme.yellow, |s| s.display_w),
+        ("OTHER", values[5], theme.dim, |s| s.other_w),
+    ];
+    let history = app.history.window(OVERVIEW_WINDOW);
+    let spark_width = (inner.width / 3).clamp(10, 28);
+    for (i, (label, value, color, accessor)) in specs.iter().enumerate() {
+        let row = rows[i];
+        if row.height == 0 {
+            continue;
+        }
+        if !show_sparklines || inner.width < 40 {
+            render_bar_row(frame, row, label, *value, max, *color, theme);
+            continue;
+        }
+        let [bar_area, spark_area] =
+            Layout::horizontal([Constraint::Min(0), Constraint::Length(spark_width)]).areas(row);
+        render_bar_row(frame, bar_area, label, *value, max, *color, theme);
+        let values = history_values(&history, spark_area.width as usize, accessor);
+        let spark_max = values.iter().copied().max().unwrap_or(1);
+        graph::render_sparkline(frame, spark_area, &values, spark_max, *color, app.ascii);
+    }
+}
+
+fn history_values(
+    history: &[&Sample],
+    width: usize,
+    accessor: impl Fn(&Sample) -> Option<f32>,
+) -> Vec<u64> {
+    history
+        .iter()
+        .rev()
+        .take(width)
+        .rev()
+        .filter_map(|s| accessor(s))
+        .map(|w| (w.max(0.0) * 1000.0).round() as u64)
+        .collect()
 }
 
 fn render_cores(
