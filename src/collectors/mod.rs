@@ -23,13 +23,13 @@ pub struct CollectorOptions {
 }
 
 pub enum Sampler {
-    Real(RealSampler),
+    Real(Box<RealSampler>),
     Demo(DemoSampler),
 }
 
 impl Sampler {
     pub fn real(options: CollectorOptions) -> Self {
-        Self::Real(RealSampler::new(options))
+        Self::Real(Box::new(RealSampler::new(options)))
     }
 
     pub fn demo() -> Self {
@@ -76,11 +76,93 @@ pub struct RealSampler {
     smc: Option<SmcClient>,
     ioreport: Option<IoReportClient>,
     battery: BatteryReader,
+    battery_estimator: BatteryPowerEstimator,
     system: SystemInfo,
     warnings: Vec<String>,
     smc_disabled: bool,
     ioreport_disabled: bool,
     battery_disabled: bool,
+}
+
+#[derive(Default)]
+struct BatteryPowerEstimator {
+    last_measured_w: Option<f32>,
+    charge_ratio: Option<f32>,
+    last_external: Option<bool>,
+    last_charging: Option<bool>,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct BatteryEstimate {
+    power_w: Option<f32>,
+    amperage_a: Option<f32>,
+    estimated: bool,
+}
+
+impl BatteryPowerEstimator {
+    fn estimate(&mut self, smc: &SmcValues, battery: &BatteryInfo) -> BatteryEstimate {
+        let measured = battery.power_w;
+        let state_changed = self.last_external != Some(battery.external_connected)
+            || self.last_charging != Some(battery.is_charging);
+        if state_changed {
+            self.charge_ratio = None;
+            self.last_measured_w = None;
+        }
+        self.last_external = Some(battery.external_connected);
+        self.last_charging = Some(battery.is_charging);
+        let fresh = match (measured, self.last_measured_w) {
+            (Some(now), Some(prev)) => (now - prev).abs() > 0.02,
+            (Some(_), None) => true,
+            _ => false,
+        };
+
+        let estimate = if !battery.present {
+            None
+        } else if !battery.external_connected {
+            smc.ppbr_w
+                .filter(|w| w.is_finite() && *w > 0.05)
+                .map(|w| self.derived(-w, battery))
+        } else if battery.is_charging {
+            match (smc.pdtr_w, smc.pstr_w) {
+                (Some(pdtr), Some(pstr)) if pdtr > pstr => {
+                    let raw = pdtr - pstr;
+                    if raw > 0.05 {
+                        if fresh {
+                            if let Some(power) = measured.filter(|w| *w > 0.05) {
+                                self.charge_ratio = Some((power / raw).clamp(0.5, 1.2));
+                            }
+                        }
+                        Some(self.derived(raw * self.charge_ratio.unwrap_or(0.9), battery))
+                    } else {
+                        None
+                    }
+                }
+                _ => None,
+            }
+        } else {
+            None
+        };
+
+        self.last_measured_w = measured;
+        estimate.unwrap_or(BatteryEstimate {
+            power_w: measured,
+            amperage_a: battery.amperage_a,
+            estimated: false,
+        })
+    }
+
+    fn derived(&self, power_w: f32, battery: &BatteryInfo) -> BatteryEstimate {
+        let amperage_a = battery
+            .voltage_v
+            .filter(|v| v.is_finite() && *v > 0.1)
+            .map(|v| power_w / v)
+            .or(battery.amperage_a);
+        BatteryEstimate {
+            power_w: Some(power_w),
+            amperage_a,
+            estimated: true,
+        }
+    }
 }
 
 impl RealSampler {
@@ -122,6 +204,7 @@ impl RealSampler {
             smc,
             ioreport,
             battery,
+            battery_estimator: BatteryPowerEstimator::default(),
             system,
             warnings,
             smc_disabled: options.disable_smc,
@@ -153,19 +236,22 @@ impl RealSampler {
             PowerSource::Unknown
         };
 
-        let system_w = pick_system_power(&smc_values, &battery, source);
+        let battery_estimate = self.battery_estimator.estimate(&smc_values, &battery);
+        let system_w = pick_system_power(&smc_values, &battery, source, battery_estimate.power_w);
         let dc_in_w = pick_input(&smc_values, &battery);
-        let battery_w = pick_battery_power(&smc_values, &battery);
 
         let sample = Sample {
             ts: SystemTime::now(),
             system_w,
             smc_pstr_w: smc_values.pstr_w,
             dc_in_w,
-            battery_w,
+            battery_w: battery_estimate.power_w,
             battery_pct: battery.pct,
             battery_v: battery.voltage_v,
-            battery_a: battery.amperage_a,
+            battery_a: battery_estimate.amperage_a,
+            battery_w_measured: battery.power_w,
+            battery_a_measured: battery.amperage_a,
+            battery_estimated: battery_estimate.estimated,
             battery_temp_c: battery.temperature_c,
             cycle_count: battery.cycle_count,
             cpu_w: comp.cpu_w,
@@ -450,6 +536,9 @@ impl DemoSampler {
             battery_pct: Some(battery_pct),
             battery_v: Some(voltage),
             battery_a: Some(current),
+            battery_w_measured: Some(battery_w),
+            battery_a_measured: Some(current),
+            battery_estimated: false,
             battery_temp_c: Some(30.0),
             cycle_count: Some(123),
             cpu_w: Some(cpu),
@@ -496,16 +585,21 @@ fn display_power(controller_w: Option<f32>, backlight_w: Option<f32>) -> Option<
     }
 }
 
-fn pick_system_power(smc: &SmcValues, battery: &BatteryInfo, source: PowerSource) -> Option<f32> {
+fn pick_system_power(
+    smc: &SmcValues,
+    battery: &BatteryInfo,
+    source: PowerSource,
+    battery_w: Option<f32>,
+) -> Option<f32> {
+    if source == PowerSource::Battery {
+        return battery_w
+            .map(f32::abs)
+            .filter(|w| *w > 0.0)
+            .or_else(|| smc.pstr_w.filter(|w| *w > 0.0))
+            .or_else(|| battery.fw_system_load_w.filter(|w| *w > 0.0));
+    }
     smc.pstr_w
         .filter(|w| *w > 0.0)
-        .or_else(|| {
-            if source == PowerSource::Battery {
-                battery.power_w.map(f32::abs).filter(|w| *w > 0.0)
-            } else {
-                None
-            }
-        })
         .or_else(|| smc.pdtr_w.filter(|w| *w > 0.0))
         .or_else(|| battery.fw_system_load_w.filter(|w| *w > 0.0))
 }
@@ -521,23 +615,6 @@ fn pick_input(smc: &SmcValues, battery: &BatteryInfo) -> Option<f32> {
                 None
             }
         })
-}
-
-fn pick_battery_power(smc: &SmcValues, battery: &BatteryInfo) -> Option<f32> {
-    if !battery.present {
-        return None;
-    }
-    battery.power_w.or_else(|| {
-        smc.ppbr_w.map(|w| {
-            if battery.is_charging {
-                w
-            } else if battery.external_connected && battery.fully_charged {
-                0.0
-            } else {
-                -w
-            }
-        })
-    })
 }
 
 fn add_smc_rails(rails: &mut Vec<RailValue>, smc: &SmcValues) {
@@ -617,21 +694,66 @@ mod tests {
     }
 
     #[test]
-    fn battery_power_sign_falls_back_to_ppbr() {
+    fn estimates_discharge_power_from_ppbr() {
         let smc = SmcValues {
             pstr_w: None,
-            ppbr_w: Some(4.5),
+            ppbr_w: Some(5.0),
             pdtr_w: None,
             backlight_w: None,
         };
         let battery = BatteryInfo {
             present: true,
-            power_w: None,
+            power_w: Some(-4.5),
+            voltage_v: Some(11.8),
             external_connected: false,
             is_charging: false,
             ..BatteryInfo::default()
         };
-        assert_eq!(pick_battery_power(&smc, &battery), Some(-4.5));
+        let mut estimator = BatteryPowerEstimator::default();
+        let estimate = estimator.estimate(&smc, &battery);
+        assert!((estimate.power_w.unwrap() + 5.0).abs() < 1e-6);
+        assert!((estimate.amperage_a.unwrap() + 5.0 / 11.8).abs() < 1e-5);
+        assert!(estimate.estimated);
+    }
+
+    #[test]
+    fn estimates_charge_power_from_dc_minus_system() {
+        let smc = SmcValues {
+            pstr_w: Some(39.0),
+            ppbr_w: Some(1.6),
+            pdtr_w: Some(64.3),
+            backlight_w: None,
+        };
+        let battery = BatteryInfo {
+            present: true,
+            power_w: Some(23.0),
+            voltage_v: Some(11.8),
+            external_connected: true,
+            is_charging: true,
+            ..BatteryInfo::default()
+        };
+        let mut estimator = BatteryPowerEstimator::default();
+        let estimate = estimator.estimate(&smc, &battery);
+        let power = estimate.power_w.unwrap();
+        assert!((power - 23.0).abs() < 0.1, "power was {power}");
+        assert!(estimate.estimated);
+    }
+
+    #[test]
+    fn battery_estimate_falls_back_to_measured_gauge() {
+        let smc = SmcValues::default();
+        let battery = BatteryInfo {
+            present: true,
+            power_w: Some(-4.5),
+            amperage_a: Some(-0.38),
+            external_connected: false,
+            ..BatteryInfo::default()
+        };
+        let mut estimator = BatteryPowerEstimator::default();
+        let estimate = estimator.estimate(&smc, &battery);
+        assert_eq!(estimate.power_w, Some(-4.5));
+        assert_eq!(estimate.amperage_a, Some(-0.38));
+        assert!(!estimate.estimated);
     }
 
     #[test]
@@ -644,7 +766,7 @@ mod tests {
             ..BatteryInfo::default()
         };
         assert_eq!(
-            pick_system_power(&smc, &battery, PowerSource::Ac),
+            pick_system_power(&smc, &battery, PowerSource::Ac, None),
             Some(12.5)
         );
     }
@@ -671,7 +793,7 @@ mod tests {
     }
 
     #[test]
-    fn system_power_prefers_pstr() {
+    fn system_power_prefers_pstr_on_ac() {
         let smc = SmcValues {
             pstr_w: Some(3.8),
             ppbr_w: Some(4.5),
@@ -685,8 +807,28 @@ mod tests {
             ..BatteryInfo::default()
         };
         assert_eq!(
-            pick_system_power(&smc, &battery, PowerSource::Battery),
+            pick_system_power(&smc, &battery, PowerSource::Ac, Some(-4.5)),
             Some(3.8)
+        );
+    }
+
+    #[test]
+    fn system_power_uses_battery_discharge_when_unplugged() {
+        let smc = SmcValues {
+            pstr_w: Some(3.8),
+            ppbr_w: Some(5.5),
+            pdtr_w: None,
+            backlight_w: None,
+        };
+        let battery = BatteryInfo {
+            present: true,
+            power_w: Some(-5.5),
+            source: PowerSource::Battery,
+            ..BatteryInfo::default()
+        };
+        assert_eq!(
+            pick_system_power(&smc, &battery, PowerSource::Battery, Some(-5.5)),
+            Some(5.5)
         );
     }
 }

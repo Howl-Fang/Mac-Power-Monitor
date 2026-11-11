@@ -85,6 +85,19 @@ pub fn render(frame: &mut Frame, area: Rect, app: &mut App, theme: &Theme) {
                 &format!("adapter {adapter} | cell voltages {cells}"),
                 theme.text(),
             ));
+            let sample = &snapshot.sample;
+            lines.push(line(
+                "Power: ",
+                bold,
+                &format!(
+                    "{} fast | {} measured | {} fast current | {} measured current",
+                    crate::model::fmt_battery_power(sample),
+                    crate::model::fmt_power(b.power_w),
+                    crate::model::fmt_battery_current(sample),
+                    crate::model::fmt_current(b.amperage_a)
+                ),
+                theme.text(),
+            ));
         }
     }
     lines.push(Line::from(""));
@@ -93,13 +106,13 @@ pub fn render(frame: &mut Frame, area: Rect, app: &mut App, theme: &Theme) {
     lines.push(line(
         "SMC: ",
         bold,
-        "PSTR (system power), PPBR (battery rail; hardware-dependent), PDTR (DC input), PBLR/PDBR (display backlight when present).",
+        "PSTR (system power), PPBR (battery discharge power on this Mac), PDTR (DC input), PBLR/PDBR (display backlight when present).",
         theme.text(),
     ));
     lines.push(line(
         "Battery: ",
         bold,
-        "AppleSmartBattery voltage, signed current, temperature, health, cycles, adapter details. Power = V x I.",
+        "AppleSmartBattery voltage, signed current, temperature, health, cycles. The current/power gauge refreshes only about every 30 seconds on this Mac.",
         theme.text(),
     ));
     lines.push(line(
@@ -132,13 +145,19 @@ pub fn render(frame: &mut Frame, area: Rect, app: &mut App, theme: &Theme) {
     lines.push(line(
         "System power: ",
         bold,
-        "SMC PSTR first, then battery-side V x I while discharging, then PDTR on AC, then firmware SystemLoad.",
+        "on battery, battery discharge power first; on AC, SMC PSTR first, then PDTR, then firmware SystemLoad.",
         theme.text(),
     ));
     lines.push(line(
         "Battery power: ",
         bold,
-        "signed: positive while charging, negative while discharging. PPBR is a hardware-dependent fallback.",
+        "signed: positive while charging, negative while discharging. ~ marks a fast SMC-derived estimate between gauge updates.",
+        theme.text(),
+    ));
+    lines.push(line(
+        "Fast battery: ",
+        bold,
+        "on battery use PPBR; while charging use (PDTR - PSTR) calibrated to the last fresh V x I gauge value. Raw/JSON keep the measured values too.",
         theme.text(),
     ));
     lines.push(line(

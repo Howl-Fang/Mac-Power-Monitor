@@ -127,11 +127,10 @@ macpower [OPTIONS]
 
 整机功耗按以下优先级选择：
 
-1. SMC `PSTR`（系统功耗）。
-2. 放电时使用电池侧 `V × I`。
-3. 接交流电时使用 SMC `PDTR`（DC 输入）。
-4. `PowerTelemetryData.SystemLoad`（固件遥测，仅在 SMC 缺失时兜底）。
-5. 都不可用时为 `n/a`。
+- **使用电池时**：电池放电功率（快速 SMC 估计优先）→ SMC `PSTR` → 固件 `SystemLoad`。
+- **接交流电时**：SMC `PSTR` → SMC `PDTR` → 固件 `SystemLoad` → `n/a`。
+
+电池放电功率是拔电状态下最接近整机功耗的物理量；`PSTR` 在电池模式下通常只覆盖部分系统电源轨，因此不再优先。
 
 电源输入优先级：
 
@@ -144,14 +143,23 @@ macpower [OPTIONS]
 
 - 正值 = 正在充电（功率流入电池）。
 - 负值 = 正在放电（电池向系统供电）。
-- 首选带符号的 `V × I`；`PPBR` 作为兜底，并根据 `IsCharging` / `ExternalConnected` 补上符号。
+- 界面上带 `~` 的值是 SMC 派生的快速估计；原始/JSON 中的 `battery_*_measured` 保留 IOKit 电量计读数。
+
+### 电池功率的刷新
+
+这台 M3 的 `AppleSmartBattery` 电量计大约每 30 秒才刷新一次 `InstantAmperage` 和 `Voltage`，直接显示会出现几十秒不变化的情况。程序因此使用快速估计：
+
+- **放电时**：使用 SMC `PPBR`（正值）并显示为负功率；实测 `PPBR` 与电量计 `V × I` 接近，但每秒刷新。
+- **充电时**：使用 `PDTR - PSTR` 估算充电功率，并用最近一次刷新后的 `V × I / (PDTR - PSTR)` 比例校准；没有校准值时使用 0.9。
+- 电流由快速功率除以最近一次电池电压得到。
+- 这些值会标记为 `~`；需要原始电量计时，查看 `battery_w_measured` / `battery_a_measured` 列。
 
 ### SMC
 
 通过 `AppleSMC` user client 读取，不需要 root：
 
 - `PSTR`：系统功耗（W）。
-- `PPBR`：电池相关电源轨（W）。不同 SoC/固件上的含义可能不同；实际电池功率优先使用 IOKit 的 `V × I`。
+- `PPBR`：电池放电功率（W）。在这台 M3 上，放电时 `PPBR ≈ |V × I|` 且每秒刷新；充电时它并不是充电功率，此时改用 `PDTR - PSTR` 估算。其他机型上的含义可能不同。
 - `PDTR`：DC 输入功率（W）。
 - `PBLR` / `PDBR`：屏幕背光功耗（W，若该机型提供）。该值会随亮度明显变化。
 
@@ -199,7 +207,7 @@ TUI 中按 `r` 或命令行 `--raw <PATH>` 开始录制。默认文件名为当�
 文件结构：
 
 ```text
-# macpower raw v1
+# macpower raw v2
 # start=2026-11-11T14:32:05.123+08:00
 # host=... chip=Apple M3 model=Mac14,x macos=14.2 build=...
 # units: power=W voltage=V current=A temperature=C
@@ -217,10 +225,13 @@ timestamp_ms	iso_time	source	system_w	...
 | `system_w` | W | 整机功耗最佳估计 |
 | `smc_pstr_w` | W | SMC `PSTR` |
 | `dc_in_w` | W | SMC `PDTR` / DC 输入 |
-| `battery_w` | W | 带符号电池功率：充电为正、放电为负 |
+| `battery_w` | W | 带符号电池功率最佳值：充电为正、放电为负；可能为快速估计 |
+| `battery_w_measured` | W | 电量计原始 `V × I`（约 30 秒刷新一次） |
+| `battery_a_measured` | A | 电量计原始带符号电流 |
+| `battery_estimated` | 0/1 | `battery_w` / `battery_a` 是否为 SMC 派生估计 |
 | `battery_pct` | % | 电量 |
 | `battery_v` | V | 电池电压 |
-| `battery_a` | A | 带符号电池电流 |
+| `battery_a` | A | 带符号电池电流最佳值；可能为快速估计 |
 | `battery_temp_c` | °C | 电池温度 |
 | `cycle_count` | 次 | 循环次数 |
 | `cpu_w` | W | CPU 总功耗 |
@@ -231,11 +242,11 @@ timestamp_ms	iso_time	source	system_w	...
 | `gpu_w` | W | GPU 功耗 |
 | `ane_w` | W | ANE 功耗 |
 | `dram_w` | W | DRAM 功耗 |
-| `display_w` | W | 显示子系统功耗 |
+| `display_w` | W | 显示控制器 + 背光功耗（若 SMC 提供 `PBLR` / `PDBR`） |
 | `other_w` | W | 辅助轨道部分和 |
 | `rails` | W | 顶层电源轨 `name=value;name=value;...` |
 
-`rails` 列会过滤子通道（`_SRAM`、`DTL`、Power Zone Filter 等）以保持行紧凑；`--list-sensors` 可以看到完整通道。写入时每行 flush；停止录制后文件可直接作为 PDF 导出的输入。
+`rails` 列会过滤子通道（`_SRAM`、`DTL`、Power Zone Filter 等）以保持行紧凑；`--list-sensors` 可以看到完整通道。写入时每行 flush；停止录制后文件可直接作为 PDF 导出的输入。解析器按列名读取，因此旧的 v1 文件仍然可用（新列缺失时视为空值）。
 
 ## PDF 报告
 

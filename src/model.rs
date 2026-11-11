@@ -133,7 +133,11 @@ pub struct Sample {
     pub battery_w: Option<f32>,
     pub battery_pct: Option<f32>,
     pub battery_v: Option<f32>,
+    /// Best available current: derived from SMC when the gauge is between updates.
     pub battery_a: Option<f32>,
+    pub battery_w_measured: Option<f32>,
+    pub battery_a_measured: Option<f32>,
+    pub battery_estimated: bool,
     pub battery_temp_c: Option<f32>,
     pub cycle_count: Option<u32>,
     pub cpu_w: Option<f32>,
@@ -160,6 +164,9 @@ impl Default for Sample {
             battery_pct: None,
             battery_v: None,
             battery_a: None,
+            battery_w_measured: None,
+            battery_a_measured: None,
+            battery_estimated: false,
             battery_temp_c: None,
             cycle_count: None,
             cpu_w: None,
@@ -184,6 +191,24 @@ pub struct Snapshot {
     pub battery: BatteryInfo,
     pub smc: SmcValues,
     pub system: SystemInfo,
+}
+
+pub fn fmt_battery_power(sample: &Sample) -> String {
+    let text = fmt_power(sample.battery_w);
+    if sample.battery_estimated {
+        format!("~{text}")
+    } else {
+        text
+    }
+}
+
+pub fn fmt_battery_current(sample: &Sample) -> String {
+    let text = fmt_current(sample.battery_a);
+    if sample.battery_estimated {
+        format!("~{text}")
+    } else {
+        text
+    }
 }
 
 pub fn fmt_power(w: Option<f32>) -> String {

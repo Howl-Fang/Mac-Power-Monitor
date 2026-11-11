@@ -13,7 +13,7 @@ use ratatui::widgets::{Block, Clear, Paragraph, Wrap};
 use ratatui::Frame;
 
 use crate::app::{Action, App, Modal, Tab};
-use crate::model::{fmt_pct, fmt_power};
+use crate::model::{fmt_battery_power, fmt_pct, fmt_power};
 use theme::Theme;
 
 pub fn render(frame: &mut Frame, app: &mut App, theme: &Theme) {
@@ -80,7 +80,7 @@ fn render_header(frame: &mut Frame, area: Rect, app: &App, theme: &Theme) {
             let b = &snapshot.battery;
             if b.present {
                 let pct = fmt_pct(b.pct);
-                let power = fmt_power(b.power_w);
+                let power = fmt_battery_power(&snapshot.sample);
                 if b.external_connected {
                     if b.is_charging {
                         format!("AC {} charging {}", pct, power)

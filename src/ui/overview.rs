@@ -7,7 +7,10 @@ use ratatui::widgets::{Block, Paragraph};
 use ratatui::Frame;
 
 use crate::app::App;
-use crate::model::{fmt_current, fmt_duration_min, fmt_pct, fmt_power, fmt_temp, fmt_voltage};
+use crate::model::{
+    fmt_battery_current, fmt_battery_power, fmt_duration_min, fmt_pct, fmt_power, fmt_temp,
+    fmt_voltage,
+};
 use crate::ui::theme::Theme;
 use crate::ui::widgets::bar::{render_bar_row, render_battery_gauge};
 use crate::ui::widgets::graph;
@@ -82,7 +85,7 @@ fn render_system(frame: &mut Frame, area: Rect, app: &App, theme: &Theme) {
         Span::styled(fmt_power(sample.dc_in_w), theme.text()),
         Span::raw("   "),
         Span::styled("BAT ", theme.dim_text()),
-        Span::styled(fmt_power(sample.battery_w), theme.text()),
+        Span::styled(fmt_battery_power(sample), theme.text()),
     ]);
     frame.render_widget(Paragraph::new(line).style(theme.text()), line2);
 
@@ -152,8 +155,8 @@ fn render_battery(frame: &mut Frame, area: Rect, app: &App, theme: &Theme) {
     let details = format!(
         "{}  {}  {}  {}  health {}  cycles {}",
         fmt_voltage(b.voltage_v),
-        fmt_current(b.amperage_a),
-        fmt_power(b.power_w),
+        fmt_battery_current(&snapshot.sample),
+        fmt_battery_power(&snapshot.sample),
         fmt_temp(b.temperature_c),
         fmt_pct(b.health_pct),
         b.cycle_count

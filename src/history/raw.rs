@@ -17,6 +17,9 @@ pub const COLUMNS: &[&str] = &[
     "smc_pstr_w",
     "dc_in_w",
     "battery_w",
+    "battery_w_measured",
+    "battery_a_measured",
+    "battery_estimated",
     "battery_pct",
     "battery_v",
     "battery_a",
@@ -122,7 +125,7 @@ impl Drop for Recorder {
 fn write_header(writer: &mut impl Write, system: &SystemInfo) -> std::io::Result<()> {
     let start =
         DateTime::<Local>::from(SystemTime::now()).to_rfc3339_opts(SecondsFormat::Millis, true);
-    writeln!(writer, "# macpower raw v1")?;
+    writeln!(writer, "# macpower raw v2")?;
     writeln!(writer, "# start={start}")?;
     writeln!(
         writer,
@@ -158,6 +161,9 @@ pub fn encode_row(snapshot: &Snapshot) -> String {
         opt_f32(s.smc_pstr_w),
         opt_f32(s.dc_in_w),
         opt_f32(s.battery_w),
+        opt_f32(s.battery_w_measured),
+        opt_f32(s.battery_a_measured),
+        if s.battery_estimated { "1" } else { "0" }.to_string(),
         opt_f32(s.battery_pct),
         opt_f32(s.battery_v),
         opt_f32(s.battery_a),
@@ -281,6 +287,9 @@ fn parse_row(header: &[String], cols: &[&str]) -> Option<Sample> {
         smc_pstr_w: parse_opt_f32(get("smc_pstr_w")),
         dc_in_w: parse_opt_f32(get("dc_in_w")),
         battery_w: parse_opt_f32(get("battery_w")),
+        battery_w_measured: parse_opt_f32(get("battery_w_measured")),
+        battery_a_measured: parse_opt_f32(get("battery_a_measured")),
+        battery_estimated: matches!(get("battery_estimated"), Some("1") | Some("true")),
         battery_pct: parse_opt_f32(get("battery_pct")),
         battery_v: parse_opt_f32(get("battery_v")),
         battery_a: parse_opt_f32(get("battery_a")),
@@ -332,6 +341,9 @@ mod tests {
             battery_pct: Some(57.0),
             battery_v: Some(11.63),
             battery_a: Some(-0.33),
+            battery_w_measured: Some(-4.40),
+            battery_a_measured: Some(-0.331),
+            battery_estimated: true,
             battery_temp_c: Some(30.2),
             cycle_count: Some(426),
             cpu_w: Some(0.131),
@@ -372,6 +384,24 @@ mod tests {
         assert_eq!(parsed.core_e_w, vec![0.015, 0.016]);
         assert_eq!(parsed.source, PowerSource::Battery);
         assert_eq!(parsed.cycle_count, Some(426));
+        assert_eq!(parsed.battery_w_measured, Some(-4.40));
+        assert_eq!(parsed.battery_a_measured, Some(-0.331));
+        assert!(parsed.battery_estimated);
+    }
+
+    #[test]
+    fn old_v1_rows_default_new_battery_fields() {
+        let header: Vec<String> = ["timestamp_ms", "battery_w", "battery_a"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        let cols = ["1700000000000", "-4.4", "-0.3"];
+        let parsed = parse_row(&header, &cols).unwrap();
+        assert_eq!(parsed.battery_w, Some(-4.4));
+        assert_eq!(parsed.battery_a, Some(-0.3));
+        assert_eq!(parsed.battery_w_measured, None);
+        assert_eq!(parsed.battery_a_measured, None);
+        assert!(!parsed.battery_estimated);
     }
 
     #[test]

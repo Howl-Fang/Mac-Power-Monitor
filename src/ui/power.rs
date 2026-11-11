@@ -5,7 +5,7 @@ use ratatui::widgets::{Block, Paragraph};
 use ratatui::Frame;
 
 use crate::app::App;
-use crate::model::{fmt_power, fmt_power_val, RailSource};
+use crate::model::{fmt_battery_power, fmt_power, fmt_power_val, RailSource};
 use crate::ui::theme::Theme;
 
 pub fn render(frame: &mut Frame, area: Rect, app: &mut App, theme: &Theme) {
@@ -38,7 +38,7 @@ pub fn render(frame: &mut Frame, area: Rect, app: &mut App, theme: &Theme) {
         "PSTR {}   DC-IN {}   BAT {}   adapter {}   FW in {}",
         fmt_power(snapshot.smc.pstr_w),
         fmt_power(snapshot.smc.pdtr_w),
-        fmt_power(snapshot.battery.power_w),
+        fmt_battery_power(&snapshot.sample),
         adapter,
         fmt_power(snapshot.battery.fw_system_power_in_w)
     );
