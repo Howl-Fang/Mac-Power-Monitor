@@ -497,19 +497,30 @@ mod tests {
     }
 
     #[test]
-    fn cpu_tab_adds_history_when_tall() {
+    fn cpu_tab_adds_history_when_all_cores_fit() {
         let theme = Theme::new(false);
         let mut app = test_app();
         app.tick();
         app.tick();
         app.tab = Tab::Cpu;
 
-        let compact = draw(&mut app, 80, 24, &theme);
-        assert!(!compact.contains("CPU POWER HISTORY"));
-
-        let text = draw(&mut app, 100, 34, &theme);
+        // Eight cores leave enough room for a chart even at 80x24.
+        let text = draw(&mut app, 80, 24, &theme);
         assert!(text.contains("CPU POWER HISTORY"));
         assert!(text.contains("PER-CORE POWER"));
+
+        // Many-core chips keep every core row and drop the chart instead.
+        if let Some(snapshot) = app.snapshot.as_mut() {
+            snapshot.sample.core_e_w = vec![0.01; 10];
+            snapshot.sample.core_p_w = vec![0.01; 8];
+        }
+        let compact = draw(&mut app, 80, 24, &theme);
+        assert!(!compact.contains("CPU POWER HISTORY"));
+        assert!(compact.contains("E9"));
+        assert!(compact.contains("P0"));
+
+        let tall = draw(&mut app, 100, 40, &theme);
+        assert!(tall.contains("CPU POWER HISTORY"));
     }
 
     #[test]

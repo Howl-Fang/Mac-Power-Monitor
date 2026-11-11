@@ -53,7 +53,7 @@ pub fn render(frame: &mut Frame, area: Rect, app: &mut App, theme: &Theme) {
         let [system, battery, comps, cores] = Layout::vertical([
             Constraint::Length(5),
             Constraint::Length(4),
-            Constraint::Length(8),
+            Constraint::Min(8),
             Constraint::Length(3),
         ])
         .areas(area);

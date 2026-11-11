@@ -27,14 +27,12 @@ pub fn render(frame: &mut Frame, area: Rect, app: &mut App, theme: &Theme) {
     let core_count =
         (snapshot.sample.core_e_w.len() + snapshot.sample.core_p_w.len()).max(1) as u16;
 
-    if area.height >= 26 && area.width >= 80 {
-        // Keep 5 rows for clusters and at least 5 for the history chart;
-        // the remaining rows go to as many cores as fit.
-        let visible = core_count.min(area.height.saturating_sub(12).max(1));
+    // Show the history chart only when every core still fits alongside it.
+    if area.height >= core_count + 12 && area.width >= 80 {
         let [clusters, history, cores] = Layout::vertical([
             Constraint::Length(5),
             Constraint::Min(5),
-            Constraint::Length(visible + 2),
+            Constraint::Length(core_count + 2),
         ])
         .areas(area);
         render_clusters(frame, clusters, snapshot, warming, theme);
