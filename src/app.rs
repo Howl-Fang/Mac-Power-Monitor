@@ -278,12 +278,20 @@ impl App {
                 {
                     self.execute(action);
                 }
+                self.needs_redraw = true;
             }
-            MouseEventKind::ScrollUp => self.scroll_mouse(mouse, -3),
-            MouseEventKind::ScrollDown => self.scroll_mouse(mouse, 3),
+            MouseEventKind::ScrollUp => {
+                self.scroll_mouse(mouse, -3);
+                self.needs_redraw = true;
+            }
+            MouseEventKind::ScrollDown => {
+                self.scroll_mouse(mouse, 3);
+                self.needs_redraw = true;
+            }
+            // Terminals can report hover/move and button-release events that
+            // do not change the UI; repainting for them wastes CPU.
             _ => {}
         }
-        self.needs_redraw = true;
     }
 
     fn scroll_mouse(&mut self, mouse: MouseEvent, delta: i32) {
@@ -726,5 +734,18 @@ mod tests {
             modifiers: KeyModifiers::NONE,
         });
         assert_eq!(app.tab, Tab::Power);
+    }
+
+    #[test]
+    fn mouse_move_does_not_request_redraw() {
+        let mut app = app();
+        app.needs_redraw = false;
+        app.on_mouse(MouseEvent {
+            kind: MouseEventKind::Moved,
+            column: 3,
+            row: 1,
+            modifiers: KeyModifiers::NONE,
+        });
+        assert!(!app.needs_redraw);
     }
 }
