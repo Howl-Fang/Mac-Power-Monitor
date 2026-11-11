@@ -122,11 +122,16 @@ impl BatteryPowerEstimator {
             smc.ppbr_w
                 .filter(|w| w.is_finite() && *w > 0.05)
                 .map(|w| self.derived(-w, battery))
-        } else if battery.is_charging {
+        } else {
             match (smc.pdtr_w, smc.pstr_w) {
-                (Some(pdtr), Some(pstr)) if pdtr > pstr => {
+                (Some(pdtr), Some(pstr)) => {
                     let raw = pdtr - pstr;
-                    if raw > 0.05 {
+                    // macOS can keep IsCharging false for many seconds after
+                    // the adapter is connected. If the adapter clearly
+                    // supplies more than the system uses and the pack is not
+                    // full, the difference is charging the battery.
+                    let charging = battery.is_charging || (!battery.fully_charged && raw > 3.0);
+                    if charging && raw > 0.05 {
                         if fresh {
                             if let Some(power) = measured.filter(|w| *w > 0.05) {
                                 self.charge_ratio = Some((power / raw).clamp(0.5, 1.2));
@@ -139,8 +144,6 @@ impl BatteryPowerEstimator {
                 }
                 _ => None,
             }
-        } else {
-            None
         };
 
         self.last_measured_w = measured;
@@ -737,6 +740,78 @@ mod tests {
         let power = estimate.power_w.unwrap();
         assert!((power - 23.0).abs() < 0.1, "power was {power}");
         assert!(estimate.estimated);
+    }
+
+    #[test]
+    fn estimates_charging_before_is_charging_flag() {
+        let smc = SmcValues {
+            pstr_w: Some(8.0),
+            ppbr_w: Some(1.2),
+            pdtr_w: Some(64.0),
+            backlight_w: None,
+        };
+        // The gauge still shows stale discharge and macOS has not set
+        // IsCharging yet, but the adapter is clearly charging the pack.
+        let battery = BatteryInfo {
+            present: true,
+            power_w: Some(-5.9),
+            voltage_v: Some(11.8),
+            external_connected: true,
+            is_charging: false,
+            fully_charged: false,
+            ..BatteryInfo::default()
+        };
+        let mut estimator = BatteryPowerEstimator::default();
+        let estimate = estimator.estimate(&smc, &battery);
+        let power = estimate.power_w.unwrap();
+        assert!((power - 56.0 * 0.9).abs() < 0.01, "power was {power}");
+        assert!(estimate.estimated);
+    }
+
+    #[test]
+    fn does_not_infer_charging_on_a_full_battery() {
+        let smc = SmcValues {
+            pstr_w: Some(8.0),
+            ppbr_w: None,
+            pdtr_w: Some(64.0),
+            backlight_w: None,
+        };
+        let battery = BatteryInfo {
+            present: true,
+            power_w: Some(0.0),
+            voltage_v: Some(11.8),
+            external_connected: true,
+            is_charging: false,
+            fully_charged: true,
+            ..BatteryInfo::default()
+        };
+        let mut estimator = BatteryPowerEstimator::default();
+        let estimate = estimator.estimate(&smc, &battery);
+        assert_eq!(estimate.power_w, Some(0.0));
+        assert!(!estimate.estimated);
+    }
+
+    #[test]
+    fn small_adapter_delta_is_not_treated_as_charging() {
+        let smc = SmcValues {
+            pstr_w: Some(8.0),
+            ppbr_w: None,
+            pdtr_w: Some(9.5),
+            backlight_w: None,
+        };
+        let battery = BatteryInfo {
+            present: true,
+            power_w: Some(-5.9),
+            voltage_v: Some(11.8),
+            external_connected: true,
+            is_charging: false,
+            fully_charged: false,
+            ..BatteryInfo::default()
+        };
+        let mut estimator = BatteryPowerEstimator::default();
+        let estimate = estimator.estimate(&smc, &battery);
+        assert_eq!(estimate.power_w, Some(-5.9));
+        assert!(!estimate.estimated);
     }
 
     #[test]
