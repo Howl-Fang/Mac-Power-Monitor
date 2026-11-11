@@ -497,6 +497,22 @@ mod tests {
     }
 
     #[test]
+    fn cpu_tab_adds_history_when_tall() {
+        let theme = Theme::new(false);
+        let mut app = test_app();
+        app.tick();
+        app.tick();
+        app.tab = Tab::Cpu;
+
+        let compact = draw(&mut app, 80, 24, &theme);
+        assert!(!compact.contains("CPU POWER HISTORY"));
+
+        let text = draw(&mut app, 100, 34, &theme);
+        assert!(text.contains("CPU POWER HISTORY"));
+        assert!(text.contains("PER-CORE POWER"));
+    }
+
+    #[test]
     fn renders_ascii_and_mono_modes() {
         let theme = Theme::new(true);
         let mut app = test_app();
