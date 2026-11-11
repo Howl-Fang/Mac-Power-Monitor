@@ -276,6 +276,7 @@ fn run_tui(
         },
     );
     let stop = install_signal_flag()?;
+    spawn_terminal_watchdog(stop.clone());
 
     let mut last_tick = Instant::now();
     loop {
@@ -441,6 +442,27 @@ fn install_signal_flag() -> Result<Arc<AtomicBool>> {
             .with_context(|| format!("cannot register signal {signal}"))?;
     }
     Ok(flag)
+}
+
+/// crossterm 0.29's mio event source spins forever when the terminal pty
+/// reaches EOF (`read` returns 0 but it never breaks out of its loop), which
+/// leaves an orphaned TUI pegging one CPU core after its terminal is closed.
+/// The main thread can be stuck inside that loop, so a separate thread forces
+/// the process down shortly after SIGINT/SIGTERM/SIGHUP.
+fn spawn_terminal_watchdog(stop: Arc<AtomicBool>) {
+    std::thread::spawn(move || loop {
+        if stop.load(Ordering::Relaxed) {
+            std::thread::sleep(Duration::from_millis(750));
+            force_terminal_exit();
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    });
+}
+
+fn force_terminal_exit() -> ! {
+    let _ = execute!(std::io::stdout(), DisableMouseCapture);
+    ratatui::restore();
+    std::process::exit(1);
 }
 
 fn install_panic_hook() {
