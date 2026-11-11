@@ -25,7 +25,7 @@ use model::{fmt_memory, Sample, Snapshot};
 use ui::theme::Theme;
 
 #[derive(Parser, Debug)]
-#[command(name = "macpower", version, about = "btop-style macOS power monitor")]
+#[command(name = "macpower", version, about = "Terminal power monitor for macOS")]
 struct Cli {
     /// Sample interval in milliseconds.
     #[arg(short = 'i', long, default_value_t = 1000, value_name = "MS")]

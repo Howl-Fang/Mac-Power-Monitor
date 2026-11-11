@@ -1,6 +1,6 @@
 # MacPower
 
-一个面向 macOS 的 btop 风格命令行功耗查看器。使用 Rust 编写，编译为单个可执行文件，运行时只依赖系统框架，不需要 root 权限。
+一个面向 macOS 的终端功耗查看器。使用 Rust 编写，编译为单个可执行文件，运行时只依赖系统框架，不需要 root 权限。
 
 English UI / English PDF labels; 本 README 使用中文说明。
 
@@ -326,7 +326,7 @@ src/
     power.rs              Power 页
     history.rs            History 页
     help.rs               Help 页
-    theme.rs              btop 风格配色 / 单色模式
+    theme.rs              深色终端配色 / 单色模式
     widgets/graph.rs      多序列盲文图、ASCII 图、sparkline
     widgets/bar.rs        组件条与电池仪表
 ```

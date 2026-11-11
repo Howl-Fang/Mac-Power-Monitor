@@ -3,7 +3,7 @@ name = "macpower"
 version = "0.1.0"
 edition = "2021"
 rust-version = "1.88"
-description = "A btop-style macOS power monitor"
+description = "A terminal-based macOS power monitor"
 
 [dependencies]
 ratatui = "0.30.2"
