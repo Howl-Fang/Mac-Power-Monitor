@@ -152,7 +152,7 @@ macpower [OPTIONS]
 这台 M3 的 `AppleSmartBattery` 电量计大约每 30 秒才刷新一次 `InstantAmperage` 和 `Voltage`，直接显示会出现几十秒不变化的情况。程序因此使用快速估计：
 
 - **放电时**：使用 SMC `PPBR`（正值）并显示为负功率；实测 `PPBR` 与电量计 `V × I` 接近，但每秒刷新。
-- **充电时**：使用 `PDTR - PSTR` 估算充电功率，并用最近一次刷新后的 `V × I / (PDTR - PSTR)` 比例校准；没有校准值时使用 0.9。
+- **充电时**：使用 `PDTR - PSTR` 估算充电功率，并用最近一次刷新后的 `V × I / (PDTR - PSTR)` 比例校准；没有校准值时使用 0.9。macOS 刚接入电源后可能长时间保持 `IsCharging=false`，此时若电池未充满且 `PDTR - PSTR` 明显大于系统消耗，也按充电处理，避免退回几十秒不刷新的电量计。
 - 电流由快速功率除以最近一次电池电压得到。
 - 这些值会标记为 `~`；需要原始电量计时，查看 `battery_w_measured` / `battery_a_measured` 列。
 

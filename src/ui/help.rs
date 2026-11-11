@@ -157,7 +157,7 @@ pub fn render(frame: &mut Frame, area: Rect, app: &mut App, theme: &Theme) {
     lines.push(line(
         "Fast battery: ",
         bold,
-        "on battery use PPBR; while charging use (PDTR - PSTR) calibrated to the last fresh V x I gauge value. Raw/JSON keep the measured values too.",
+        "on battery use PPBR; while charging use (PDTR - PSTR) calibrated to the last fresh V x I gauge value. A clear adapter surplus is also used when macOS keeps IsCharging false. Raw/JSON keep the measured values too.",
         theme.text(),
     ));
     lines.push(line(
