@@ -9,11 +9,11 @@ use ratatui::Frame;
 use crate::app::App;
 use crate::history::series_avg;
 use crate::model::{
-    fmt_battery_current, fmt_battery_power, fmt_duration_min, fmt_pct, fmt_power, fmt_temp,
-    fmt_voltage, Sample,
+    fmt_battery_current, fmt_battery_power, fmt_duration_min, fmt_pct, fmt_power, fmt_power_val,
+    fmt_temp, fmt_voltage, Sample,
 };
 use crate::ui::theme::Theme;
-use crate::ui::widgets::bar::{render_bar_row, render_battery_gauge};
+use crate::ui::widgets::bar::{render_bar_row_text, render_battery_gauge};
 use crate::ui::widgets::graph::{self, GraphOptions, GraphSeries};
 
 const OVERVIEW_WINDOW: Duration = Duration::from_secs(60);
@@ -302,17 +302,23 @@ fn render_components(
     ];
     let max = values.iter().copied().fold(0.0f32, f32::max).max(0.5);
 
-    let cpu_label = match (sample.ecpu_w, sample.pcpu_w) {
-        (Some(e), Some(p)) => format!("CPU (E {} / P {})", fmt_power(Some(e)), fmt_power(Some(p))),
-        _ => "CPU".to_string(),
-    };
+    const LABELS: [&str; 6] = ["CPU", "GPU", "ANE", "DRAM", "DISPLAY", "OTHER"];
+    let label_width = LABELS
+        .iter()
+        .map(|label| label.chars().count())
+        .max()
+        .unwrap_or(0);
+    let labels: Vec<String> = LABELS
+        .iter()
+        .map(|label| format!("{label:<label_width$}"))
+        .collect();
     let specs: [ComponentSpec<'_>; 6] = [
-        (&cpu_label, values[0], theme.green, |s| s.cpu_w),
-        ("GPU", values[1], theme.orange, |s| s.gpu_w),
-        ("ANE", values[2], theme.purple, |s| s.ane_w),
-        ("DRAM", values[3], theme.red, |s| s.dram_w),
-        ("DISPLAY", values[4], theme.yellow, |s| s.display_w),
-        ("OTHER", values[5], theme.dim, |s| s.other_w),
+        (&labels[0], values[0], theme.green, |s| s.cpu_w),
+        (&labels[1], values[1], theme.orange, |s| s.gpu_w),
+        (&labels[2], values[2], theme.purple, |s| s.ane_w),
+        (&labels[3], values[3], theme.red, |s| s.dram_w),
+        (&labels[4], values[4], theme.yellow, |s| s.display_w),
+        (&labels[5], values[5], theme.dim, |s| s.other_w),
     ];
     let history = app.history.window(OVERVIEW_WINDOW);
     let spark_width = (inner.width / 3).clamp(10, 28);
@@ -321,17 +327,52 @@ fn render_components(
         if row.height == 0 {
             continue;
         }
-        if !show_sparklines || inner.width < 40 {
-            render_bar_row(frame, row, label, *value, max, *color, theme);
-            continue;
+        let (bar_area, spark_area) = if show_sparklines && inner.width >= 40 {
+            let [bar, spark] =
+                Layout::horizontal([Constraint::Min(0), Constraint::Length(spark_width)])
+                    .areas(row);
+            (bar, Some(spark))
+        } else {
+            (row, None)
+        };
+        let bar_inner = bar_area.width.saturating_sub(label_width as u16 + 3) as usize;
+        let text = if i == 0 {
+            cpu_value_text(sample, *value, bar_inner)
+        } else {
+            fmt_power_val(*value)
+        };
+        let ratio = (*value / max.max(0.0001)).clamp(0.0, 1.0) as f64;
+        render_bar_row_text(frame, bar_area, label, ratio, *color, &text, theme);
+        if let Some(spark_area) = spark_area {
+            let values = history_values(&history, spark_area.width as usize, accessor);
+            let spark_max = values.iter().copied().max().unwrap_or(1);
+            graph::render_sparkline(frame, spark_area, &values, spark_max, *color, app.ascii);
         }
-        let [bar_area, spark_area] =
-            Layout::horizontal([Constraint::Min(0), Constraint::Length(spark_width)]).areas(row);
-        render_bar_row(frame, bar_area, label, *value, max, *color, theme);
-        let values = history_values(&history, spark_area.width as usize, accessor);
-        let spark_max = values.iter().copied().max().unwrap_or(1);
-        graph::render_sparkline(frame, spark_area, &values, spark_max, *color, app.ascii);
     }
+}
+
+fn cpu_value_text(sample: &Sample, total: f32, available: usize) -> String {
+    let total_text = fmt_power_val(total);
+    let (Some(e), Some(p)) = (sample.ecpu_w, sample.pcpu_w) else {
+        return total_text;
+    };
+    let detailed = format!(
+        "{total_text} (E {} / P {})",
+        fmt_power(Some(e)),
+        fmt_power(Some(p))
+    );
+    if detailed.chars().count() <= available {
+        return detailed;
+    }
+    let compact = format!("{total_text} E{}/P{}", compact_power(e), compact_power(p));
+    if compact.chars().count() <= available {
+        return compact;
+    }
+    total_text
+}
+
+fn compact_power(w: f32) -> String {
+    fmt_power_val(w).replace(' ', "")
 }
 
 fn history_values(
@@ -407,5 +448,35 @@ fn core_power(w: f32) -> String {
         format!("{:.0}mW", w * 1000.0)
     } else {
         format!("{:.2}W", w)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cpu_value_text_compresses_to_fit() {
+        let sample = Sample {
+            cpu_w: Some(0.189),
+            ecpu_w: Some(0.121),
+            pcpu_w: Some(0.068),
+            ..Sample::default()
+        };
+        assert_eq!(
+            cpu_value_text(&sample, 0.189, 40),
+            "189 mW (E 121 mW / P 68 mW)"
+        );
+        assert_eq!(cpu_value_text(&sample, 0.189, 19), "189 mW E121mW/P68mW");
+        assert_eq!(cpu_value_text(&sample, 0.189, 18), "189 mW");
+    }
+
+    #[test]
+    fn cpu_value_text_without_clusters_is_total_only() {
+        let sample = Sample {
+            cpu_w: Some(0.189),
+            ..Sample::default()
+        };
+        assert_eq!(cpu_value_text(&sample, 0.189, 40), "189 mW");
     }
 }

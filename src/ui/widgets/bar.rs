@@ -16,16 +16,21 @@ pub fn render_bar_row(
     color: Color,
     theme: &Theme,
 ) {
+    let text = fmt_power_val(value);
     let ratio = (value / max.max(0.0001)).clamp(0.0, 1.0) as f64;
-    render_meter(
-        frame,
-        area,
-        label,
-        &fmt_power_val(value),
-        ratio,
-        color,
-        theme,
-    );
+    render_bar_row_text(frame, area, label, ratio, color, &text, theme);
+}
+
+pub fn render_bar_row_text(
+    frame: &mut Frame,
+    area: Rect,
+    label: &str,
+    ratio: f64,
+    color: Color,
+    text: &str,
+    theme: &Theme,
+) {
+    render_meter(frame, area, label, text, ratio, color, theme);
 }
 
 pub fn render_battery_gauge(

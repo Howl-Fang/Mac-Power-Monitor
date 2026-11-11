@@ -500,6 +500,36 @@ mod tests {
     }
 
     #[test]
+    fn overview_component_meters_align() {
+        let theme = Theme::new(false);
+        let mut app = test_app();
+        app.tick();
+        app.tab = Tab::Overview;
+        let text = draw(&mut app, 80, 24, &theme);
+        let labels = ["CPU", "GPU", "ANE", "DRAM", "DISPLAY", "OTHER"];
+        let mut brackets = Vec::new();
+        let mut cpu_line = None;
+        for line in text.lines() {
+            let content = line.trim_start_matches('│');
+            let Some(label) = labels.iter().find(|label| content.starts_with(**label)) else {
+                continue;
+            };
+            if let Some(pos) = line.find('[') {
+                brackets.push(pos);
+            }
+            if *label == "CPU" {
+                cpu_line = Some(line);
+            }
+        }
+        assert_eq!(brackets.len(), 6, "component meters missing");
+        assert!(
+            brackets.iter().all(|pos| *pos == brackets[0]),
+            "meters not aligned: {brackets:?}"
+        );
+        assert!(cpu_line.unwrap().contains("(E"));
+    }
+
+    #[test]
     fn cpu_tab_adds_history_when_all_cores_fit() {
         let theme = Theme::new(false);
         let mut app = test_app();
