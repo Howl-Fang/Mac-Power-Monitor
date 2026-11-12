@@ -7,15 +7,28 @@ English UI / English PDF labels; 本 README 使用中文说明。
 ## 功能
 
 - 整机功耗：优先读取 SMC `PSTR`，并提供电源输入、电池功率等交叉参考值。
+
 - 电池信息：电量、电压、带符号电流、功率、温度、健康度、循环次数、剩余时间、适配器信息。
+
 - 组件功耗：CPU（E/P 集群）、逐核功耗、GPU、ANE、DRAM、显示、其他 SoC 辅助电源轨。
+
 - 历史曲线：内存环形缓冲、降采样、最小值/平均值/最大值、梯形积分能量（Wh）。
+
 - 持久历史：程序长时间运行（TUI 或无 TUI，`--demo`/`--once` 除外）时自动把紧凑记录写入 `/tmp/macpower/history`，保留最近约 48 小时，跨次启动仍可导出。
+
 - 交互：键盘和鼠标，标签页、滚动、暂停、录制、历史窗口切换。
+
 - 导出：一页式选择来源（最近 48h / 录制段）、时间尺度与格式（PDF / TSV），无需逐级菜单。
+
 - 录制：`r` 开始无上限的完整原始 TSV 录制，保存到 `/tmp/macpower/recordings`；停止后该段独立保留，不再追加。
+
 - 兼容性兜底：SMC、IOReport、电池任意一个不可用时，其余功能仍可工作，缺失值显示 `n/a` 而不是假的 0。
 
+## 示例
+
+![Overview](./demo/Overview.png)
+![History](./demo/History.png)
+![CPU History](./demo/CPU.png)
 ## 环境与构建
 
 要求：
