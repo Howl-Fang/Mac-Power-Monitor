@@ -371,6 +371,7 @@ fn render_export_modal(
             .alignment(Alignment::Right),
         esc_area,
     );
+    app.hit_zones.push((esc_area, Action::ModalCancel));
 }
 
 fn render_export_source_row(
@@ -595,8 +596,15 @@ mod tests {
             .hit_zones
             .iter()
             .any(|(_, action)| matches!(action, Action::ExportRun)));
+        let (cancel_rect, _) = app
+            .hit_zones
+            .iter()
+            .find(|(_, action)| matches!(action, Action::ModalCancel))
+            .cloned()
+            .expect("cancel hit zone");
+        click(&mut app, cancel_rect);
+        assert!(app.modal.is_none());
 
-        app.modal = None;
         let text = draw(&mut app, 79, 23, &theme);
         assert!(text.contains("Terminal too small"));
     }
