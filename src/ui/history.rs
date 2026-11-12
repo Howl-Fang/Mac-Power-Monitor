@@ -6,7 +6,7 @@ use ratatui::Frame;
 
 use crate::app::{window_label, Action, App};
 use crate::history::{series_avg, Summary};
-use crate::model::{fmt_power_val, fmt_wh, Sample};
+use crate::model::{fmt_power_val, fmt_wh, plausible_dc_input_w, Sample};
 use crate::ui::theme::Theme;
 use crate::ui::widgets::graph::{self, GraphOptions, GraphSeries};
 
@@ -45,14 +45,21 @@ pub fn render(frame: &mut Frame, area: Rect, app: &mut App, theme: &Theme) {
             data: series_avg(&samples, width, |s| s.gpu_w),
         },
         GraphSeries {
+            label: "Display",
+            color: theme.yellow,
+            data: series_avg(&samples, width, |s| s.display_w),
+        },
+        GraphSeries {
             label: "DRAM",
             color: theme.red,
             data: series_avg(&samples, width, |s| s.dram_w),
         },
         GraphSeries {
-            label: "Display",
-            color: theme.yellow,
-            data: series_avg(&samples, width, |s| s.display_w),
+            label: "DC in",
+            color: theme.blue,
+            data: series_avg(&samples, width, |s| {
+                Some(plausible_dc_input_w(s).unwrap_or(0.0))
+            }),
         },
     ];
     graph::render_graph(

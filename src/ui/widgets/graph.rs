@@ -109,7 +109,9 @@ pub fn render_graph(
             .x_bounds([0.0, 1.0])
             .y_bounds([ymin, ymax])
             .paint(|ctx| {
-                for s in series {
+                // Draw in reverse so the first series in the legend has the
+                // highest overlay priority.
+                for s in series.iter().rev() {
                     if s.data.len() < 2 {
                         continue;
                     }
@@ -204,7 +206,7 @@ fn render_ascii(
     }
     let mut grid = vec![vec![' '; w]; h];
     let chars = ['*', '+', 'x', 'o', '#', '@', '%', '='];
-    for (si, s) in series.iter().enumerate() {
+    for (si, s) in series.iter().enumerate().rev() {
         let ch = chars[si % chars.len()];
         let mut peaks: Vec<Option<f64>> = vec![None; w];
         for (x, y) in &s.data {

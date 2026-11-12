@@ -10,7 +10,7 @@ use crate::app::App;
 use crate::history::series_avg;
 use crate::model::{
     fmt_battery_current, fmt_battery_power, fmt_duration_min, fmt_pct, fmt_power, fmt_power_val,
-    fmt_temp, fmt_voltage, Sample,
+    fmt_temp, fmt_voltage, plausible_dc_input_w, Sample,
 };
 use crate::ui::theme::Theme;
 use crate::ui::widgets::bar::{render_bar_row_text, render_battery_gauge};
@@ -228,14 +228,21 @@ fn render_history(frame: &mut Frame, area: Rect, app: &App, theme: &Theme) {
             data: series_avg(&samples, width, |s| s.gpu_w),
         },
         GraphSeries {
+            label: "Display",
+            color: theme.yellow,
+            data: series_avg(&samples, width, |s| s.display_w),
+        },
+        GraphSeries {
             label: "DRAM",
             color: theme.red,
             data: series_avg(&samples, width, |s| s.dram_w),
         },
         GraphSeries {
-            label: "Display",
-            color: theme.yellow,
-            data: series_avg(&samples, width, |s| s.display_w),
+            label: "DC in",
+            color: theme.blue,
+            data: series_avg(&samples, width, |s| {
+                Some(plausible_dc_input_w(s).unwrap_or(0.0))
+            }),
         },
     ];
     let options = GraphOptions {
