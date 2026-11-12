@@ -482,6 +482,10 @@ fn draw_summary_table(
     line(ops, x, line_y + 4.0, x + w, line_y + 4.0, light, 0.5);
 }
 
+fn zero_baseline(y_min: f64, y_max: f64) -> Option<f64> {
+    (y_min < 0.0 && y_max > 0.0).then_some(0.0)
+}
+
 fn draw_chart(
     ops: &mut Vec<Op>,
     rect: Rect,
@@ -542,12 +546,19 @@ fn draw_chart(
 
     // Horizontal grid and y labels.
     let grid = 4;
+    let range = y_max - y_min;
+    let zero = zero_baseline(y_min, y_max);
     for i in 0..=grid {
         let t = i as f64 / grid as f64;
         let gy = py + ph * t;
         line(ops, px, gy, px + pw, gy, palette.light, 0.4);
-        let value = y_min + (y_max - y_min) * t;
-        let label = if (y_max - y_min).abs() < 2.0 {
+        let value = y_min + range * t;
+        // The dedicated zero line below carries its own label; suppress a
+        // grid label close enough to collide with it.
+        if zero.is_some() && value.abs() < range * 0.1 {
+            continue;
+        }
+        let label = if range.abs() < 2.0 {
             format!("{value:.2}")
         } else {
             format!("{value:.0}")
@@ -556,6 +567,11 @@ fn draw_chart(
     }
     line(ops, px, py, px, py + ph, palette.gray, 0.7);
     line(ops, px, py, px + pw, py, palette.gray, 0.7);
+    if zero.is_some() {
+        let zy = py + ((0.0 - y_min) / range) * ph;
+        line(ops, px, zy, px + pw, zy, palette.black, 0.7);
+        text(ops, rect.x, zy - 2.5, 6.5, "0", palette.black);
+    }
 
     text(
         ops,
@@ -959,5 +975,13 @@ mod tests {
     fn sanitizes_non_ascii() {
         assert_eq!(ascii("a°b\tc"), "a?b?c");
         assert_eq!(wrap_ascii("one two three", 7), vec!["one two", "three"]);
+    }
+
+    #[test]
+    fn zero_baseline_only_when_axis_crosses_zero() {
+        assert_eq!(zero_baseline(-4.0, 8.0), Some(0.0));
+        assert_eq!(zero_baseline(0.0, 8.0), None);
+        assert_eq!(zero_baseline(-4.0, 0.0), None);
+        assert_eq!(zero_baseline(1.0, 8.0), None);
     }
 }
