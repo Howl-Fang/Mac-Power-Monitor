@@ -21,6 +21,7 @@ use app::{App, AppOptions};
 use collectors::{CollectorOptions, Sampler};
 use history::pdf::{write_report, ReportInput};
 use history::raw::{self, Recorder};
+use history::store::{self, HistoryStore};
 use model::{fmt_memory, Sample, Snapshot};
 use ui::theme::Theme;
 
@@ -189,6 +190,17 @@ fn run_headless(cli: &Cli, options: CollectorOptions, interval_ms: u64) -> Resul
             .start(path.clone(), sampler.system())
             .with_context(|| format!("cannot create {}", path.display()))?;
     }
+    let mut history_store = if cli.demo {
+        None
+    } else {
+        match HistoryStore::open(store::default_base_dir()) {
+            Ok(store) => Some(store),
+            Err(err) => {
+                eprintln!("history store unavailable: {err}");
+                None
+            }
+        }
+    };
     if cli.format == Format::Tsv {
         print_tsv_header();
     }
@@ -207,6 +219,12 @@ fn run_headless(cli: &Cli, options: CollectorOptions, interval_ms: u64) -> Resul
         let snapshot = sampler.tick();
         samples.push(snapshot.sample.clone());
         last_rails = snapshot.rails.clone();
+        if let Some(store) = history_store.as_mut() {
+            if let Err(err) = store.record(&snapshot, sampler.system()) {
+                eprintln!("history store disabled: {err}");
+                history_store = None;
+            }
+        }
         if recorder.is_recording() {
             recorder
                 .write(&snapshot)
@@ -273,6 +291,7 @@ fn run_tui(
             ascii: cli.ascii,
             raw_path: cli.raw.clone(),
             report_path: cli.report.clone(),
+            history_dir: (!cli.demo).then(store::default_base_dir),
         },
     );
     let stop = install_signal_flag()?;

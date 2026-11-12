@@ -12,7 +12,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Clear, Paragraph, Wrap};
 use ratatui::Frame;
 
-use crate::app::{Action, App, Modal, Tab};
+use crate::app::{Action, App, ExportFormat, ExportModal, Modal, Tab, EXPORT_WINDOWS};
 use crate::model::{fmt_battery_power, fmt_pct, fmt_power};
 use theme::Theme;
 
@@ -248,65 +248,179 @@ fn render_footer(frame: &mut Frame, area: Rect, app: &mut App, theme: &Theme) {
     );
 }
 
+fn render_export_modal(
+    frame: &mut Frame,
+    area: Rect,
+    export: &ExportModal,
+    app: &mut App,
+    theme: &Theme,
+) {
+    let height = 16.min(area.height.saturating_sub(2));
+    let width = area.width.saturating_sub(8).min(78);
+    let rect = centered(area, width, height);
+    frame.render_widget(Clear, rect);
+    let block = Block::bordered()
+        .title(Line::from(vec![Span::styled(
+            "Export History",
+            theme.title(),
+        )]))
+        .border_style(theme.border_style());
+    let inner = block.inner(rect);
+    frame.render_widget(block, rect);
+    if inner.height < 14 {
+        return;
+    }
+
+    let [source_area, gap1, header_area, grid_area, gap2, output_area, footer_area] =
+        Layout::vertical([
+            Constraint::Length(1),
+            Constraint::Length(1),
+            Constraint::Length(1),
+            Constraint::Length(EXPORT_WINDOWS.len() as u16),
+            Constraint::Length(1),
+            Constraint::Length(1),
+            Constraint::Length(1),
+        ])
+        .areas(inner);
+    let _ = (gap1, gap2);
+
+    render_export_source_row(frame, source_area, export, app, theme);
+
+    let widths = [
+        Constraint::Length(12),
+        Constraint::Length(16),
+        Constraint::Length(16),
+        Constraint::Min(0),
+    ];
+    let header_cols = Layout::horizontal(widths).split(header_area);
+    frame.render_widget(
+        Paragraph::new("Time scale").style(theme.dim_text()),
+        header_cols[0],
+    );
+    for (i, export_format) in ExportFormat::ALL.iter().enumerate() {
+        let style = if export.format == i {
+            theme.title()
+        } else {
+            theme.dim_text()
+        };
+        frame.render_widget(
+            Paragraph::new(export_format.label())
+                .style(style)
+                .alignment(Alignment::Center),
+            header_cols[i + 1],
+        );
+    }
+
+    let rows = Layout::vertical(vec![Constraint::Length(1); EXPORT_WINDOWS.len()]).split(grid_area);
+    for (row_idx, (label, _)) in EXPORT_WINDOWS.iter().enumerate() {
+        let cols = Layout::horizontal(widths).split(rows[row_idx]);
+        let time_style = if export.window == row_idx {
+            theme.title()
+        } else {
+            theme.text()
+        };
+        frame.render_widget(Paragraph::new(*label).style(time_style), cols[0]);
+        for (col_idx, _) in ExportFormat::ALL.iter().enumerate() {
+            let cell = cols[col_idx + 1];
+            let selected = export.window == row_idx && export.format == col_idx;
+            let (text, style) = if selected {
+                ("[x]", theme.selected())
+            } else {
+                ("[ ]", theme.dim_text())
+            };
+            frame.render_widget(
+                Paragraph::new(Span::styled(text, style)).alignment(Alignment::Center),
+                cell,
+            );
+            app.hit_zones.push((
+                cell,
+                Action::ExportCell {
+                    window: row_idx,
+                    format: col_idx,
+                },
+            ));
+        }
+    }
+
+    let output = format!("Output: {}", export.output_path().display());
+    frame.render_widget(
+        Paragraph::new(truncate(&output, inner.width as usize)).style(theme.dim_text()),
+        output_area,
+    );
+
+    let [hint_area, button_area, esc_area] = Layout::horizontal([
+        Constraint::Min(0),
+        Constraint::Length(12),
+        Constraint::Length(12),
+    ])
+    .areas(footer_area);
+    frame.render_widget(
+        Paragraph::new("Tab source   arrows cell").style(theme.dim_text()),
+        hint_area,
+    );
+    frame.render_widget(
+        Paragraph::new("[ Export ]")
+            .style(theme.selected())
+            .alignment(Alignment::Center),
+        button_area,
+    );
+    app.hit_zones.push((button_area, Action::ExportRun));
+    frame.render_widget(
+        Paragraph::new("Esc cancel")
+            .style(theme.dim_text())
+            .alignment(Alignment::Right),
+        esc_area,
+    );
+}
+
+fn render_export_source_row(
+    frame: &mut Frame,
+    area: Rect,
+    export: &ExportModal,
+    app: &mut App,
+    theme: &Theme,
+) {
+    let label = export
+        .sources
+        .get(export.source)
+        .map(|source| source.label.as_str())
+        .unwrap_or("n/a");
+    let count = export.sources.len().max(1);
+    let prefix = "Source:  ";
+    let suffix = format!("  ({}/{})", export.source + 1, count);
+    let reserved = prefix.len() + 4 + suffix.len();
+    let available = (area.width as usize).saturating_sub(reserved);
+    let label = truncate(label, available);
+    let arrow_style = if export.sources.len() > 1 {
+        theme.title()
+    } else {
+        theme.dim_text()
+    };
+    let line = Line::from(vec![
+        Span::styled(prefix, theme.dim_text()),
+        Span::styled("< ", arrow_style),
+        Span::styled(label.clone(), theme.text()),
+        Span::styled(" >", arrow_style),
+        Span::styled(suffix, theme.dim_text()),
+    ]);
+    frame.render_widget(Paragraph::new(line), area);
+
+    if export.sources.len() > 1 {
+        let left_x = area.x + prefix.len() as u16;
+        let right_x = left_x + 2 + label.chars().count() as u16 + 1;
+        app.hit_zones
+            .push((Rect::new(left_x, area.y, 1, 1), Action::ExportSourcePrev));
+        app.hit_zones
+            .push((Rect::new(right_x, area.y, 1, 1), Action::ExportSourceNext));
+    }
+}
+
 fn render_modal(frame: &mut Frame, area: Rect, app: &mut App, theme: &Theme) {
     let Some(modal) = app.modal.clone() else {
         return;
     };
     match modal {
-        Modal::Export(export) => {
-            let height = (export.options.len() as u16 + 7).min(area.height.saturating_sub(2));
-            let width = area.width.saturating_sub(8).min(78);
-            let rect = centered(area, width, height);
-            frame.render_widget(Clear, rect);
-            let block = Block::bordered()
-                .title(Line::from(vec![Span::styled(
-                    "Export PDF Report",
-                    theme.title(),
-                )]))
-                .border_style(theme.border_style());
-            let inner = block.inner(rect);
-            frame.render_widget(block, rect);
-
-            let output = format!("Output: {}", export.output_path.display());
-            let [out_area, options_area, hint_area] = Layout::vertical([
-                Constraint::Length(2),
-                Constraint::Min(1),
-                Constraint::Length(1),
-            ])
-            .areas(inner);
-            frame.render_widget(
-                Paragraph::new(truncate(&output, inner.width as usize))
-                    .style(theme.dim_text())
-                    .wrap(Wrap { trim: true }),
-                out_area,
-            );
-
-            let option_rows = (options_area.y..).zip(export.options.iter().enumerate());
-            for (y, (i, option)) in option_rows {
-                if y >= options_area.y + options_area.height {
-                    break;
-                }
-                let row = Rect::new(options_area.x, y, options_area.width, 1);
-                let selected = i == export.selected;
-                let marker = if selected { ">" } else { " " };
-                let label = truncate(&format!("{marker} {}", option.label), row.width as usize);
-                let style = if !option.enabled {
-                    theme.dim_text()
-                } else if selected {
-                    theme.selected()
-                } else {
-                    theme.text()
-                };
-                frame.render_widget(Paragraph::new(label).style(style), row);
-                app.hit_zones.push((row, Action::ModalSelect(i)));
-            }
-            frame.render_widget(
-                Paragraph::new("Enter select   Esc cancel")
-                    .style(theme.dim_text())
-                    .alignment(Alignment::Right),
-                hint_area,
-            );
-        }
+        Modal::Export(export) => render_export_modal(frame, area, &export, app, theme),
         Modal::Error { title, message } => {
             let width = area.width.saturating_sub(10).min(74);
             let height = 10.min(area.height.saturating_sub(2));
@@ -373,6 +487,7 @@ mod tests {
                 ascii: false,
                 raw_path: None,
                 report_path: None,
+                history_dir: None,
             },
         )
     }
@@ -466,16 +581,61 @@ mod tests {
             state: KeyEventState::NONE,
         });
         let text = draw(&mut app, 80, 24, &theme);
-        assert!(text.contains("Export PDF Report"));
-        assert!(text.contains("Session history"));
+        assert!(text.contains("Export History"));
+        assert!(text.contains("This session"));
+        assert!(text.contains("PDF"));
+        assert!(text.contains("TSV"));
+        assert!(text.contains("48 hours"));
+        assert!(text.contains("Output:"));
         assert!(app
             .hit_zones
             .iter()
-            .any(|(_, action)| matches!(action, Action::ModalSelect(_))));
+            .any(|(_, action)| matches!(action, Action::ExportCell { .. })));
+        assert!(app
+            .hit_zones
+            .iter()
+            .any(|(_, action)| matches!(action, Action::ExportRun)));
 
         app.modal = None;
         let text = draw(&mut app, 79, 23, &theme);
         assert!(text.contains("Terminal too small"));
+    }
+
+    #[test]
+    fn export_modal_mouse_selects_a_grid_cell() {
+        let theme = Theme::new(false);
+        let mut app = test_app();
+        app.tick();
+        app.on_key(KeyEvent {
+            code: KeyCode::Char('e'),
+            modifiers: KeyModifiers::NONE,
+            kind: KeyEventKind::Press,
+            state: KeyEventState::NONE,
+        });
+        draw(&mut app, 80, 24, &theme);
+        let (rect, _) = app
+            .hit_zones
+            .iter()
+            .find(|(_, action)| {
+                matches!(
+                    action,
+                    Action::ExportCell {
+                        window: 7,
+                        format: 1
+                    }
+                )
+            })
+            .cloned()
+            .expect("All/TSV cell");
+        click(&mut app, rect);
+        match app.modal {
+            Some(Modal::Export(export)) => {
+                assert_eq!(export.window, 7);
+                assert_eq!(export.format, 1);
+                assert_eq!(export.format().label(), "TSV");
+            }
+            _ => panic!("expected export modal"),
+        }
     }
 
     #[test]

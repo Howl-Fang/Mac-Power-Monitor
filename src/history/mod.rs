@@ -1,5 +1,6 @@
 pub mod pdf;
 pub mod raw;
+pub mod store;
 
 use std::collections::VecDeque;
 use std::time::{Duration, SystemTime};

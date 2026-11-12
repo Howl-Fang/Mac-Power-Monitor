@@ -38,6 +38,36 @@ pub const COLUMNS: &[&str] = &[
     "rails",
 ];
 
+/// Compact schema used by the always-on rolling history. It has the same
+/// per-sample fields as the raw format but omits the verbose rails column.
+pub const COMPACT_COLUMNS: &[&str] = &[
+    "timestamp_ms",
+    "iso_time",
+    "source",
+    "system_w",
+    "smc_pstr_w",
+    "dc_in_w",
+    "battery_w",
+    "battery_w_measured",
+    "battery_a_measured",
+    "battery_estimated",
+    "battery_pct",
+    "battery_v",
+    "battery_a",
+    "battery_temp_c",
+    "cycle_count",
+    "cpu_w",
+    "ecpu_w",
+    "pcpu_w",
+    "core_e_w",
+    "core_p_w",
+    "gpu_w",
+    "ane_w",
+    "dram_w",
+    "display_w",
+    "other_w",
+];
+
 pub struct Recorder {
     file: Option<BufWriter<File>>,
     path: Option<PathBuf>,
@@ -122,10 +152,14 @@ impl Drop for Recorder {
     }
 }
 
-fn write_header(writer: &mut impl Write, system: &SystemInfo) -> std::io::Result<()> {
+fn write_metadata(
+    writer: &mut impl Write,
+    magic: &str,
+    system: &SystemInfo,
+) -> std::io::Result<()> {
     let start =
         DateTime::<Local>::from(SystemTime::now()).to_rfc3339_opts(SecondsFormat::Millis, true);
-    writeln!(writer, "# macpower raw v2")?;
+    writeln!(writer, "{magic}")?;
     writeln!(writer, "# start={start}")?;
     writeln!(
         writer,
@@ -137,23 +171,36 @@ fn write_header(writer: &mut impl Write, system: &SystemInfo) -> std::io::Result
         sanitize(&system.os_build)
     )?;
     writeln!(writer, "# units: power=W voltage=V current=A temperature=C")?;
-    writeln!(writer, "# columns: {}", COLUMNS.join("\t"))?;
-    writeln!(writer, "{}", COLUMNS.join("\t"))?;
     Ok(())
+}
+
+fn write_columns(writer: &mut impl Write, columns: &[&str]) -> std::io::Result<()> {
+    writeln!(writer, "# columns: {}", columns.join("\t"))?;
+    writeln!(writer, "{}", columns.join("\t"))?;
+    Ok(())
+}
+
+fn write_header(writer: &mut impl Write, system: &SystemInfo) -> std::io::Result<()> {
+    write_metadata(writer, "# macpower raw v2", system)?;
+    write_columns(writer, COLUMNS)
+}
+
+pub fn write_history_header(writer: &mut impl Write, system: &SystemInfo) -> std::io::Result<()> {
+    write_metadata(writer, "# macpower history v1", system)?;
+    write_columns(writer, COMPACT_COLUMNS)
 }
 
 fn sanitize(s: &str) -> String {
     s.replace(['\t', '\n', '\r'], " ")
 }
 
-pub fn encode_row(snapshot: &Snapshot) -> String {
-    let s = &snapshot.sample;
+fn sample_fields(s: &Sample) -> Vec<String> {
     let ts_ms =
         s.ts.duration_since(UNIX_EPOCH)
             .unwrap_or(Duration::ZERO)
             .as_millis();
     let iso = DateTime::<Local>::from(s.ts).to_rfc3339_opts(SecondsFormat::Millis, true);
-    let fields = [
+    vec![
         ts_ms.to_string(),
         iso,
         s.source.label().to_string(),
@@ -179,10 +226,24 @@ pub fn encode_row(snapshot: &Snapshot) -> String {
         opt_f32(s.dram_w),
         opt_f32(s.display_w),
         opt_f32(s.other_w),
-        encode_rails(&snapshot.rails),
-    ];
+    ]
+}
+
+pub fn encode_row(snapshot: &Snapshot) -> String {
+    let mut fields = sample_fields(&snapshot.sample);
+    fields.push(encode_rails(&snapshot.rails));
     debug_assert_eq!(fields.len(), COLUMNS.len());
     fields.join("\t")
+}
+
+pub fn encode_compact_row(snapshot: &Snapshot) -> String {
+    let fields = sample_fields(&snapshot.sample);
+    debug_assert_eq!(fields.len(), COMPACT_COLUMNS.len());
+    fields.join("\t")
+}
+
+pub fn encode_compact_sample(sample: &Sample) -> String {
+    sample_fields(sample).join("\t")
 }
 
 fn opt_f32(value: Option<f32>) -> String {
@@ -218,6 +279,169 @@ pub(crate) fn is_top_level_rail(name: &str) -> bool {
         return false;
     }
     true
+}
+
+pub fn first_timestamp(path: &Path) -> Option<SystemTime> {
+    let file = File::open(path).ok()?;
+    for line in BufReader::new(file).lines().map_while(Result::ok) {
+        if line.is_empty() || line.starts_with('#') || line.starts_with("timestamp_ms\t") {
+            continue;
+        }
+        if let Some(ms) = line
+            .split('\t')
+            .next()
+            .and_then(|value| value.parse::<u64>().ok())
+        {
+            return Some(UNIX_EPOCH + Duration::from_millis(ms));
+        }
+    }
+    None
+}
+
+pub fn last_timestamp(path: &Path) -> Option<SystemTime> {
+    let file = File::open(path).ok()?;
+    let mut last = None;
+    for line in BufReader::new(file).lines().map_while(Result::ok) {
+        if line.is_empty() || line.starts_with('#') || line.starts_with("timestamp_ms\t") {
+            continue;
+        }
+        if let Some(ms) = line
+            .split('\t')
+            .next()
+            .and_then(|value| value.parse::<u64>().ok())
+        {
+            last = Some(UNIX_EPOCH + Duration::from_millis(ms));
+        }
+    }
+    last
+}
+
+fn read_columns(path: &Path) -> Option<Vec<String>> {
+    let file = File::open(path).ok()?;
+    for line in BufReader::new(file).lines().map_while(Result::ok) {
+        if let Some(rest) = line.strip_prefix("# columns:") {
+            return Some(rest.trim().split('\t').map(str::to_string).collect());
+        }
+    }
+    None
+}
+
+fn write_export_header(
+    writer: &mut impl Write,
+    columns: &[&str],
+    source_label: &str,
+    start: Option<SystemTime>,
+    end: Option<SystemTime>,
+) -> std::io::Result<()> {
+    let generated =
+        DateTime::<Local>::from(SystemTime::now()).to_rfc3339_opts(SecondsFormat::Millis, true);
+    writeln!(writer, "# macpower export v1")?;
+    writeln!(writer, "# generated={generated}")?;
+    writeln!(writer, "# source={}", sanitize(source_label))?;
+    let range = match (start, end) {
+        (Some(start), Some(end)) => format!(
+            "{} -> {}",
+            DateTime::<Local>::from(start).to_rfc3339_opts(SecondsFormat::Millis, true),
+            DateTime::<Local>::from(end).to_rfc3339_opts(SecondsFormat::Millis, true)
+        ),
+        _ => "all available".to_string(),
+    };
+    writeln!(writer, "# range={range}")?;
+    writeln!(writer, "# units: power=W voltage=V current=A temperature=C")?;
+    write_columns(writer, columns)
+}
+
+/// Copy rows newer than `cutoff` from one or more TSV files, preserving their
+/// data columns and writing a fresh export header.
+pub fn export_tsv_files(
+    files: &[PathBuf],
+    output: &Path,
+    cutoff: Option<SystemTime>,
+    end: Option<SystemTime>,
+    source_label: &str,
+) -> Result<usize, String> {
+    if files.is_empty() {
+        return Err("no history files".to_string());
+    }
+    let columns = files
+        .iter()
+        .find_map(|path| read_columns(path))
+        .unwrap_or_else(|| COLUMNS.iter().map(|value| value.to_string()).collect());
+    let column_refs: Vec<&str> = columns.iter().map(String::as_str).collect();
+    let mut writer = BufWriter::new(
+        File::create(output).map_err(|e| format!("create {}: {e}", output.display()))?,
+    );
+    write_export_header(&mut writer, &column_refs, source_label, cutoff, end)
+        .map_err(|e| format!("write {}: {e}", output.display()))?;
+    let cutoff_ms = cutoff.map(|time| {
+        time.duration_since(UNIX_EPOCH)
+            .unwrap_or(Duration::ZERO)
+            .as_millis() as i64
+    });
+    let mut rows = 0usize;
+    for path in files {
+        let file = File::open(path).map_err(|e| format!("open {}: {e}", path.display()))?;
+        for line in BufReader::new(file).lines() {
+            let line = line.map_err(|e| format!("read {}: {e}", path.display()))?;
+            if line.is_empty()
+                || line.starts_with('#')
+                || line.starts_with("timestamp_ms\t")
+                || line == "timestamp_ms"
+            {
+                continue;
+            }
+            if let Some(cutoff_ms) = cutoff_ms {
+                let Some(ts) = line
+                    .split('\t')
+                    .next()
+                    .and_then(|value| value.parse::<i64>().ok())
+                else {
+                    continue;
+                };
+                if ts < cutoff_ms {
+                    continue;
+                }
+            }
+            writeln!(writer, "{line}").map_err(|e| format!("write {}: {e}", output.display()))?;
+            rows += 1;
+        }
+    }
+    writer
+        .flush()
+        .map_err(|e| format!("write {}: {e}", output.display()))?;
+    if rows == 0 {
+        return Err("no samples in selected range".to_string());
+    }
+    Ok(rows)
+}
+
+pub fn write_samples_tsv(
+    output: &Path,
+    samples: &[Sample],
+    source_label: &str,
+) -> Result<usize, String> {
+    if samples.is_empty() {
+        return Err("no samples to export".to_string());
+    }
+    let mut writer = BufWriter::new(
+        File::create(output).map_err(|e| format!("create {}: {e}", output.display()))?,
+    );
+    write_export_header(
+        &mut writer,
+        COMPACT_COLUMNS,
+        source_label,
+        samples.first().map(|sample| sample.ts),
+        samples.last().map(|sample| sample.ts),
+    )
+    .map_err(|e| format!("write {}: {e}", output.display()))?;
+    for sample in samples {
+        writeln!(writer, "{}", encode_compact_sample(sample))
+            .map_err(|e| format!("write {}: {e}", output.display()))?;
+    }
+    writer
+        .flush()
+        .map_err(|e| format!("write {}: {e}", output.display()))?;
+    Ok(samples.len())
 }
 
 pub fn parse_file(path: &Path) -> Result<Vec<Sample>, String> {
@@ -387,6 +611,30 @@ mod tests {
         assert_eq!(parsed.battery_w_measured, Some(-4.40));
         assert_eq!(parsed.battery_a_measured, Some(-0.331));
         assert!(parsed.battery_estimated);
+    }
+
+    #[test]
+    fn compact_columns_match_raw_without_rails() {
+        assert_eq!(COMPACT_COLUMNS, &COLUMNS[..COLUMNS.len() - 1]);
+    }
+
+    #[test]
+    fn compact_row_round_trips() {
+        let snapshot = Snapshot {
+            sample: sample(),
+            rails: Vec::new(),
+            battery: BatteryInfo::default(),
+            smc: SmcValues::default(),
+            system: SystemInfo::default(),
+        };
+        let row = encode_compact_row(&snapshot);
+        let header: Vec<String> = COMPACT_COLUMNS.iter().map(|s| s.to_string()).collect();
+        let cols: Vec<&str> = row.split('\t').collect();
+        assert_eq!(cols.len(), COMPACT_COLUMNS.len());
+        let parsed = parse_row(&header, &cols).unwrap();
+        assert_eq!(parsed.system_w, Some(4.72));
+        assert_eq!(parsed.battery_w, Some(-4.44));
+        assert_eq!(parsed.core_e_w, vec![0.015, 0.016]);
     }
 
     #[test]

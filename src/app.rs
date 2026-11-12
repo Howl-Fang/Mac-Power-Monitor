@@ -1,13 +1,15 @@
+use std::fs;
 use std::path::{Path, PathBuf};
-use std::time::Duration;
+use std::time::{Duration, UNIX_EPOCH};
 
-use chrono::Local;
+use chrono::{Local, NaiveDateTime};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 use ratatui::layout::{Position, Rect};
 
 use crate::collectors::Sampler;
 use crate::history::pdf::{write_report, ReportInput};
 use crate::history::raw::{self, Recorder};
+use crate::history::store::{self, HistoryStore};
 use crate::history::History;
 use crate::model::{fmt_wh, Sample, Snapshot};
 
@@ -56,28 +58,93 @@ pub enum Action {
     TogglePause,
     ShowHelp,
     SetWindow(u64),
-    ModalSelect(usize),
+    ExportSourcePrev,
+    ExportSourceNext,
+    ExportCell { window: usize, format: usize },
+    ExportRun,
     ModalCancel,
 }
 
-#[derive(Clone, Debug)]
-pub enum ExportSource {
-    Session,
-    RawFile(PathBuf),
+pub const EXPORT_WINDOWS: [(&str, Option<u64>); 8] = [
+    ("1 min", Some(60)),
+    ("5 min", Some(300)),
+    ("15 min", Some(900)),
+    ("1 hour", Some(3600)),
+    ("6 hours", Some(21_600)),
+    ("24 hours", Some(86_400)),
+    ("48 hours", Some(172_800)),
+    ("All", None),
+];
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ExportFormat {
+    Pdf,
+    Tsv,
+}
+
+impl ExportFormat {
+    pub const ALL: [ExportFormat; 2] = [ExportFormat::Pdf, ExportFormat::Tsv];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            ExportFormat::Pdf => "PDF",
+            ExportFormat::Tsv => "TSV",
+        }
+    }
+
+    pub fn extension(self) -> &'static str {
+        match self {
+            ExportFormat::Pdf => "pdf",
+            ExportFormat::Tsv => "tsv",
+        }
+    }
 }
 
 #[derive(Clone, Debug)]
-pub struct ExportOption {
+pub enum ExportSourceKind {
+    Recent48h,
+    Session,
+    Recording(PathBuf),
+}
+
+#[derive(Clone, Debug)]
+pub struct ExportSourceChoice {
     pub label: String,
-    pub enabled: bool,
-    pub source: Option<ExportSource>,
+    pub kind: ExportSourceKind,
 }
 
 #[derive(Clone, Debug)]
 pub struct ExportModal {
-    pub options: Vec<ExportOption>,
-    pub selected: usize,
-    pub output_path: PathBuf,
+    pub sources: Vec<ExportSourceChoice>,
+    pub source: usize,
+    pub window: usize,
+    pub format: usize,
+    pub stamp: String,
+}
+
+impl ExportModal {
+    pub fn window_secs(&self) -> Option<u64> {
+        EXPORT_WINDOWS.get(self.window).and_then(|(_, secs)| *secs)
+    }
+
+    pub fn format(&self) -> ExportFormat {
+        ExportFormat::ALL
+            .get(self.format)
+            .copied()
+            .unwrap_or(ExportFormat::Pdf)
+    }
+
+    pub fn output_path(&self) -> PathBuf {
+        let prefix = match self.format() {
+            ExportFormat::Pdf => "power-report",
+            ExportFormat::Tsv => "power-history",
+        };
+        PathBuf::from(format!(
+            "{prefix}-{}.{}",
+            self.stamp,
+            self.format().extension()
+        ))
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -91,8 +158,10 @@ pub struct App {
     pub prev_tab: Tab,
     pub sampler: Sampler,
     pub history: History,
+    pub store: Option<HistoryStore>,
     pub snapshot: Option<Snapshot>,
     pub recorder: Recorder,
+    pub recording_finalize: bool,
     pub modal: Option<Modal>,
     pub hit_zones: Vec<(Rect, Action)>,
     pub content_rect: Rect,
@@ -121,18 +190,32 @@ pub struct AppOptions {
     pub ascii: bool,
     pub raw_path: Option<PathBuf>,
     pub report_path: Option<PathBuf>,
+    /// Directory for the always-on 48h history. `None` disables it.
+    pub history_dir: Option<PathBuf>,
 }
 
 impl App {
     pub fn new(sampler: Sampler, options: AppOptions) -> Self {
-        let warnings = sampler.warnings().to_vec();
+        let mut warnings = sampler.warnings().to_vec();
+        let store = match options.history_dir {
+            Some(dir) => match HistoryStore::open(dir) {
+                Ok(store) => Some(store),
+                Err(err) => {
+                    warnings.push(format!("rolling history unavailable: {err}"));
+                    None
+                }
+            },
+            None => None,
+        };
         let mut app = Self {
             tab: Tab::Overview,
             prev_tab: Tab::Overview,
             sampler,
             history: History::new(Duration::from_secs(options.history_secs.max(1))),
+            store,
             snapshot: None,
             recorder: Recorder::new(),
+            recording_finalize: false,
             modal: None,
             hit_zones: Vec::new(),
             content_rect: Rect::default(),
@@ -153,7 +236,7 @@ impl App {
             mouse_toggle_requested: None,
         };
         if let Some(path) = options.raw_path {
-            if let Err(err) = app.start_recording_at(path) {
+            if let Err(err) = app.start_recording_at(path, false) {
                 app.warnings.push(err);
             }
         }
@@ -166,10 +249,26 @@ impl App {
         }
         let snapshot = self.sampler.tick();
         self.history.push(snapshot.sample.clone());
+        let mut store_error = None;
+        if let Some(store) = self.store.as_mut() {
+            if let Err(err) = store.record(&snapshot, self.sampler.system()) {
+                store_error = Some(format!("rolling history disabled: {err}"));
+            }
+        }
+        if let Some(err) = store_error {
+            self.store = None;
+            self.warnings.push(err);
+        }
         if self.recorder.is_recording() {
             if let Err(err) = self.recorder.write(&snapshot) {
                 self.warnings.push(format!("raw write failed: {err}"));
-                self.recorder.stop();
+                let path = self.recorder.stop();
+                if self.recording_finalize {
+                    if let Some(path) = path {
+                        finalize_recording(&path);
+                    }
+                    self.recording_finalize = false;
+                }
                 self.status = "recording stopped after write error".to_string();
             }
         }
@@ -198,16 +297,38 @@ impl App {
                 Modal::Export(mut export) => match key.code {
                     KeyCode::Esc | KeyCode::Char('q') => {}
                     KeyCode::Up | KeyCode::Char('k') => {
-                        export.selected = export.selected.saturating_sub(1);
+                        export.window = export.window.saturating_sub(1);
                         self.modal = Some(Modal::Export(export));
                     }
                     KeyCode::Down | KeyCode::Char('j') => {
-                        export.selected =
-                            (export.selected + 1).min(export.options.len().saturating_sub(1));
+                        export.window =
+                            (export.window + 1).min(EXPORT_WINDOWS.len().saturating_sub(1));
+                        self.modal = Some(Modal::Export(export));
+                    }
+                    KeyCode::Left | KeyCode::Char('h') => {
+                        export.format = export.format.saturating_sub(1);
+                        self.modal = Some(Modal::Export(export));
+                    }
+                    KeyCode::Right | KeyCode::Char('l') => {
+                        export.format =
+                            (export.format + 1).min(ExportFormat::ALL.len().saturating_sub(1));
+                        self.modal = Some(Modal::Export(export));
+                    }
+                    KeyCode::Tab => {
+                        if !export.sources.is_empty() {
+                            export.source = (export.source + 1) % export.sources.len();
+                        }
+                        self.modal = Some(Modal::Export(export));
+                    }
+                    KeyCode::BackTab => {
+                        if !export.sources.is_empty() {
+                            export.source =
+                                (export.source + export.sources.len() - 1) % export.sources.len();
+                        }
                         self.modal = Some(Modal::Export(export));
                     }
                     KeyCode::Enter => {
-                        self.activate_export_option(&export, export.selected);
+                        self.export_selected(&export);
                     }
                     _ => self.modal = Some(Modal::Export(export)),
                 },
@@ -319,10 +440,29 @@ impl App {
                 self.window_secs = secs;
                 self.status = format!("window: {}", window_label(secs));
             }
-            Action::ModalSelect(index) => {
-                if let Some(Modal::Export(export)) = self.modal.as_ref() {
-                    let export = export.clone();
-                    self.activate_export_option(&export, index);
+            Action::ExportSourcePrev | Action::ExportSourceNext => {
+                if let Some(Modal::Export(mut export)) = self.modal.take() {
+                    if !export.sources.is_empty() {
+                        let len = export.sources.len();
+                        export.source = if matches!(action, Action::ExportSourcePrev) {
+                            (export.source + len - 1) % len
+                        } else {
+                            (export.source + 1) % len
+                        };
+                    }
+                    self.modal = Some(Modal::Export(export));
+                }
+            }
+            Action::ExportCell { window, format } => {
+                if let Some(Modal::Export(mut export)) = self.modal.take() {
+                    export.window = window.min(EXPORT_WINDOWS.len().saturating_sub(1));
+                    export.format = format.min(ExportFormat::ALL.len().saturating_sub(1));
+                    self.modal = Some(Modal::Export(export));
+                }
+            }
+            Action::ExportRun => {
+                if let Some(Modal::Export(export)) = self.modal.clone() {
+                    self.export_selected(&export);
                 }
             }
             Action::ModalCancel => {
@@ -411,6 +551,11 @@ impl App {
     fn toggle_recording(&mut self) {
         if self.recorder.is_recording() {
             let path = self.recorder.stop();
+            let path = match path {
+                Some(path) if self.recording_finalize => Some(finalize_recording(&path)),
+                other => other,
+            };
+            self.recording_finalize = false;
             if let Some(path) = path {
                 self.last_raw = Some(path.clone());
                 self.status = format!(
@@ -422,8 +567,18 @@ impl App {
                 self.status = "recording stopped".to_string();
             }
         } else {
-            let path = unique_path(default_raw_path());
-            if let Err(err) = self.start_recording_at(path) {
+            let dir = self.recording_dir();
+            let path = match default_recording_path(&dir) {
+                Ok(path) => path,
+                Err(err) => {
+                    self.modal = Some(Modal::Error {
+                        title: "Recording failed".to_string(),
+                        message: err,
+                    });
+                    return;
+                }
+            };
+            if let Err(err) = self.start_recording_at(path, true) {
                 self.modal = Some(Modal::Error {
                     title: "Recording failed".to_string(),
                     message: err,
@@ -432,111 +587,209 @@ impl App {
         }
     }
 
-    fn start_recording_at(&mut self, path: PathBuf) -> Result<(), String> {
+    fn recording_dir(&self) -> PathBuf {
+        self.store
+            .as_ref()
+            .map(|store| store.recordings_dir().to_path_buf())
+            .unwrap_or_else(|| store::default_base_dir().join("recordings"))
+    }
+
+    fn start_recording_at(&mut self, path: PathBuf, finalize: bool) -> Result<(), String> {
         let system = self.sampler.system().clone();
         self.recorder
             .start(path.clone(), &system)
             .map_err(|e| format!("cannot create {}: {e}", path.display()))?;
+        self.recording_finalize = finalize;
         self.last_raw = Some(path.clone());
         self.status = format!("recording to {}", path.display());
         Ok(())
     }
 
+    fn export_sources(&self) -> Vec<ExportSourceChoice> {
+        let mut sources = Vec::new();
+        if self.store.is_some() {
+            sources.push(ExportSourceChoice {
+                label: "Last 48h".to_string(),
+                kind: ExportSourceKind::Recent48h,
+            });
+        } else if !self.history.is_empty() {
+            sources.push(ExportSourceChoice {
+                label: "This session".to_string(),
+                kind: ExportSourceKind::Session,
+            });
+        }
+        if let Some(store) = &self.store {
+            for path in store.list_recordings() {
+                sources.push(recording_choice(path));
+            }
+        }
+        let active = self
+            .recorder
+            .path()
+            .map(Path::to_path_buf)
+            .or_else(|| self.recorder.last_path().map(Path::to_path_buf));
+        if let Some(path) = active.filter(|path| path.exists()) {
+            let already_listed = sources.iter().any(|source| {
+                matches!(&source.kind, ExportSourceKind::Recording(known) if known == &path)
+            });
+            if !already_listed {
+                sources.push(recording_choice(path));
+            }
+        }
+        sources
+    }
+
     fn open_export_modal(&mut self) {
-        let mut options = Vec::new();
-        if !self.history.is_empty() {
-            options.push(ExportOption {
-                label: format!("Session history ({} samples)", self.history.len()),
-                enabled: true,
-                source: Some(ExportSource::Session),
+        let sources = self.export_sources();
+        if sources.is_empty() {
+            self.modal = Some(Modal::Error {
+                title: "Export unavailable".to_string(),
+                message: "No rolling history or recordings are available yet.".to_string(),
             });
+            return;
         }
-        if let Some(path) = self.recorder.last_path() {
-            options.push(ExportOption {
-                label: format!("Raw file: {}", path.display()),
-                enabled: true,
-                source: Some(ExportSource::RawFile(path.to_path_buf())),
-            });
-        }
-        options.push(ExportOption {
-            label: "Cancel".to_string(),
-            enabled: true,
-            source: None,
-        });
-        let output_path = self
-            .report_on_exit
-            .clone()
-            .unwrap_or_else(|| unique_path(default_report_path()));
+        let stamp = Local::now().format("%Y%m%d-%H%M%S").to_string();
         self.modal = Some(Modal::Export(ExportModal {
-            options,
-            selected: 0,
-            output_path,
+            sources,
+            source: 0,
+            window: 3,
+            format: 0,
+            stamp,
         }));
     }
 
-    fn activate_export_option(&mut self, export: &ExportModal, index: usize) {
-        let Some(option) = export.options.get(index) else {
+    fn export_selected(&mut self, export: &ExportModal) {
+        let Some(source) = export.sources.get(export.source).cloned() else {
             return;
         };
-        if !option.enabled {
-            self.modal = Some(Modal::Export(export.clone()));
-            return;
-        }
-        let Some(source) = option.source.clone() else {
-            self.modal = None;
-            return;
+        let secs = export.window_secs();
+        let format = export.format();
+        let output = unique_path(export.output_path());
+        let result = match format {
+            ExportFormat::Pdf => self.export_pdf_source(&source, secs, &output),
+            ExportFormat::Tsv => self.export_tsv_source(&source, secs, &output),
         };
-        let result = self.export_pdf(&source, &export.output_path);
         match result {
-            Ok(samples) => {
-                self.last_export = Some(export.output_path.clone());
-                self.status = format!(
-                    "PDF written to {} ({} samples)",
-                    export.output_path.display(),
-                    samples
-                );
+            Ok(rows) => {
+                self.last_export = Some(output.clone());
+                let unit = match format {
+                    ExportFormat::Pdf => "samples",
+                    ExportFormat::Tsv => "rows",
+                };
+                let name = output
+                    .file_name()
+                    .map(|name| name.to_string_lossy().to_string())
+                    .unwrap_or_else(|| output.display().to_string());
+                self.status = format!("{name} ({} {unit})", rows);
                 self.modal = None;
             }
             Err(err) => {
                 self.modal = Some(Modal::Error {
-                    title: "PDF export failed".to_string(),
+                    title: "Export failed".to_string(),
                     message: err,
                 });
             }
         }
     }
 
-    fn export_pdf(&mut self, source: &ExportSource, output: &Path) -> Result<usize, String> {
-        let (samples, source_label) = match source {
-            ExportSource::Session => {
-                let samples: Vec<Sample> = self.history.samples().cloned().collect();
-                (samples, "session history".to_string())
+    fn load_export_samples(
+        &mut self,
+        source: &ExportSourceChoice,
+        secs: Option<u64>,
+    ) -> Result<Vec<Sample>, String> {
+        match &source.kind {
+            ExportSourceKind::Recent48h => self
+                .store
+                .as_mut()
+                .ok_or_else(|| "rolling history unavailable".to_string())?
+                .samples_since(secs),
+            ExportSourceKind::Session => {
+                let mut samples: Vec<Sample> = self.history.samples().cloned().collect();
+                filter_export_samples(&mut samples, secs)?;
+                Ok(samples)
             }
-            ExportSource::RawFile(path) => {
-                self.recorder
-                    .flush()
-                    .map_err(|e| format!("flush raw file: {e}"))?;
-                let samples = raw::parse_file(path)?;
-                (samples, format!("raw file {}", path.display()))
+            ExportSourceKind::Recording(path) => {
+                if self.recorder.is_recording() {
+                    self.recorder
+                        .flush()
+                        .map_err(|e| format!("flush recording: {e}"))?;
+                }
+                let mut samples = raw::parse_file(path)?;
+                filter_export_samples(&mut samples, secs)?;
+                Ok(samples)
             }
-        };
-        if samples.is_empty() {
-            return Err("no samples to export".to_string());
         }
+    }
+
+    fn export_pdf_source(
+        &mut self,
+        source: &ExportSourceChoice,
+        secs: Option<u64>,
+        output: &Path,
+    ) -> Result<usize, String> {
+        let samples = self.load_export_samples(source, secs)?;
         let rails = self
             .snapshot
             .as_ref()
-            .map(|s| s.rails.clone())
+            .map(|snapshot| snapshot.rails.clone())
             .unwrap_or_default();
         let system = self.sampler.system().clone();
         let input = ReportInput {
             samples: &samples,
             system: &system,
             rails: &rails,
-            source_label,
+            source_label: export_source_label(source, secs),
         };
         write_report(output, &input)?;
         Ok(samples.len())
+    }
+
+    fn export_tsv_source(
+        &mut self,
+        source: &ExportSourceChoice,
+        secs: Option<u64>,
+        output: &Path,
+    ) -> Result<usize, String> {
+        let label = export_source_label(source, secs);
+        match &source.kind {
+            ExportSourceKind::Recent48h => self
+                .store
+                .as_mut()
+                .ok_or_else(|| "rolling history unavailable".to_string())?
+                .export_tsv(output, secs, &label),
+            ExportSourceKind::Session => {
+                let samples = self.load_export_samples(source, secs)?;
+                raw::write_samples_tsv(output, &samples, &label)
+            }
+            ExportSourceKind::Recording(path) => {
+                if self.recorder.is_recording() {
+                    self.recorder
+                        .flush()
+                        .map_err(|e| format!("flush recording: {e}"))?;
+                }
+                let latest = raw::last_timestamp(path)
+                    .ok_or_else(|| format!("no samples in {}", path.display()))?;
+                let first = raw::first_timestamp(path);
+                let cutoff = secs
+                    .map(|secs| {
+                        latest
+                            .checked_sub(Duration::from_secs(secs))
+                            .unwrap_or(UNIX_EPOCH)
+                    })
+                    .or(first);
+                let cutoff = match (cutoff, first) {
+                    (Some(cutoff), Some(first)) => Some(cutoff.max(first)),
+                    (cutoff, _) => cutoff,
+                };
+                raw::export_tsv_files(
+                    std::slice::from_ref(path),
+                    output,
+                    cutoff,
+                    Some(latest),
+                    &label,
+                )
+            }
+        }
     }
 
     pub fn export_on_exit(&mut self) -> Result<Option<PathBuf>, String> {
@@ -546,8 +799,11 @@ impl App {
         if self.history.is_empty() {
             return Err("no session samples for --report".to_string());
         }
-        let source = ExportSource::Session;
-        self.export_pdf(&source, &path)?;
+        let source = ExportSourceChoice {
+            label: "session history".to_string(),
+            kind: ExportSourceKind::Session,
+        };
+        self.export_pdf_source(&source, None, &path)?;
         self.last_export = Some(path.clone());
         Ok(Some(path))
     }
@@ -581,6 +837,62 @@ impl App {
     }
 }
 
+fn recording_choice(path: PathBuf) -> ExportSourceChoice {
+    let name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("recording");
+    let live = name.ends_with(".part");
+    let stored = name.starts_with("recording-");
+    let stem = if stored {
+        name.strip_prefix("recording-").unwrap_or(name)
+    } else {
+        name
+    };
+    let stem = stem
+        .strip_suffix(".tsv.part")
+        .or_else(|| stem.strip_suffix(".tsv"))
+        .unwrap_or(stem);
+    let display = if stored {
+        NaiveDateTime::parse_from_str(stem, "%Y%m%d-%H%M%S")
+            .map(|time| time.format("%m-%d %H:%M:%S").to_string())
+            .unwrap_or_else(|_| stem.to_string())
+    } else {
+        stem.to_string()
+    };
+    let prefix = if stored { "Rec" } else { "Raw" };
+    ExportSourceChoice {
+        label: format!("{prefix} {display}{}", if live { " (partial)" } else { "" }),
+        kind: ExportSourceKind::Recording(path),
+    }
+}
+
+fn export_source_label(source: &ExportSourceChoice, secs: Option<u64>) -> String {
+    let window = secs.map(window_label).unwrap_or_else(|| "All".to_string());
+    format!("{} ({window})", source.label)
+}
+
+fn filter_export_samples(samples: &mut Vec<Sample>, secs: Option<u64>) -> Result<(), String> {
+    if samples.is_empty() {
+        return Err("no samples to export".to_string());
+    }
+    if let Some(secs) = secs {
+        let latest = samples
+            .iter()
+            .map(|sample| sample.ts)
+            .max()
+            .expect("samples are non-empty");
+        let cutoff = latest
+            .checked_sub(Duration::from_secs(secs))
+            .unwrap_or(UNIX_EPOCH);
+        samples.retain(|sample| sample.ts >= cutoff);
+    }
+    if samples.is_empty() {
+        return Err("no samples in selected range".to_string());
+    }
+    Ok(())
+}
+
 pub fn window_label(secs: u64) -> String {
     match secs {
         0 => "All".to_string(),
@@ -590,14 +902,25 @@ pub fn window_label(secs: u64) -> String {
     }
 }
 
-pub fn default_raw_path() -> PathBuf {
+fn default_recording_path(dir: &Path) -> Result<PathBuf, String> {
+    fs::create_dir_all(dir).map_err(|e| format!("create {}: {e}", dir.display()))?;
     let stamp = Local::now().format("%Y%m%d-%H%M%S");
-    PathBuf::from(format!("power-{stamp}.tsv"))
+    Ok(unique_path(dir.join(format!("recording-{stamp}.tsv.part"))))
 }
 
-pub fn default_report_path() -> PathBuf {
-    let stamp = Local::now().format("%Y%m%d-%H%M%S");
-    PathBuf::from(format!("power-report-{stamp}.pdf"))
+fn finalize_recording(path: &Path) -> PathBuf {
+    let Some(name) = path.to_str() else {
+        return path.to_path_buf();
+    };
+    let Some(base) = name.strip_suffix(".part") else {
+        return path.to_path_buf();
+    };
+    let target = PathBuf::from(base);
+    if fs::rename(path, &target).is_ok() {
+        target
+    } else {
+        path.to_path_buf()
+    }
 }
 
 fn unique_path(path: PathBuf) -> PathBuf {
@@ -661,6 +984,7 @@ mod tests {
                 ascii: false,
                 raw_path: None,
                 report_path: None,
+                history_dir: None,
             },
         )
     }
@@ -698,16 +1022,54 @@ mod tests {
     }
 
     #[test]
-    fn export_modal_opens_with_session_option() {
+    fn export_modal_opens_on_a_time_format_grid() {
         let mut app = app();
         app.tick();
         app.on_key(key(KeyCode::Char('e')));
-        match app.modal {
+        match &app.modal {
             Some(Modal::Export(export)) => {
-                assert!(export
-                    .options
-                    .iter()
-                    .any(|o| o.label.contains("Session history")));
+                assert_eq!(export.sources.len(), 1);
+                assert!(matches!(export.sources[0].kind, ExportSourceKind::Session));
+                assert_eq!(export.window, 3);
+                assert_eq!(export.format, 0);
+            }
+            _ => panic!("expected export modal"),
+        }
+        app.on_key(key(KeyCode::Down));
+        app.on_key(key(KeyCode::Right));
+        match &app.modal {
+            Some(Modal::Export(export)) => {
+                assert_eq!(export.window, 4);
+                assert_eq!(export.format, 1);
+            }
+            _ => panic!("expected export modal"),
+        }
+    }
+
+    #[test]
+    fn export_actions_change_source_and_cell() {
+        let mut app = app();
+        app.tick();
+        app.on_key(key(KeyCode::Char('e')));
+        if let Some(Modal::Export(export)) = app.modal.as_mut() {
+            export.sources.push(ExportSourceChoice {
+                label: "test recording".to_string(),
+                kind: ExportSourceKind::Recording(PathBuf::from("/tmp/test.tsv")),
+            });
+        }
+        app.execute(Action::ExportSourceNext);
+        match &app.modal {
+            Some(Modal::Export(export)) => assert_eq!(export.source, 1),
+            _ => panic!("expected export modal"),
+        }
+        app.execute(Action::ExportCell {
+            window: 6,
+            format: 1,
+        });
+        match &app.modal {
+            Some(Modal::Export(export)) => {
+                assert_eq!(export.window, 6);
+                assert_eq!(export.format, 1);
             }
             _ => panic!("expected export modal"),
         }
