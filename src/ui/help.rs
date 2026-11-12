@@ -192,6 +192,27 @@ pub fn render(frame: &mut Frame, area: Rect, app: &mut App, theme: &Theme) {
     ));
     lines.push(Line::from(""));
 
+    lines.push(section_line("HISTORY STORE", section));
+    lines.push(line(
+        "Rolling: ",
+        bold,
+        "the last 48 hours are written to /tmp/macpower/history as hourly TSV files. This uses a compact schema without the verbose rails column and older hours are pruned automatically.",
+        theme.text(),
+    ));
+    lines.push(line(
+        "Recording: ",
+        bold,
+        "press r to write a full raw TSV (with rails) under /tmp/macpower/recordings. Recording has no size limit. On stop the .part file is finalized as .tsv and is never appended to again; history before the recording stays in the rolling store.",
+        theme.text(),
+    ));
+    lines.push(line(
+        "Export: ",
+        bold,
+        "e opens one page with a source selector and a time-scale x format grid. Arrow keys move the selected cell, Tab changes source, and Enter or the Export button writes the file into the current directory.",
+        theme.text(),
+    ));
+    lines.push(Line::from(""));
+
     lines.push(section_line("KEYS", section));
     for (k, v) in [
         ("q / Ctrl-C", "quit"),
@@ -201,8 +222,8 @@ pub fn render(frame: &mut Frame, area: Rect, app: &mut App, theme: &Theme) {
         ("j / k / arrows", "scroll"),
         ("g / G", "top / bottom"),
         ("p", "pause / resume sampling"),
-        ("r", "start / stop raw TSV recording"),
-        ("e", "export PDF (session or raw file)"),
+        ("r", "start / stop full raw recording"),
+        ("e", "export history (source x time x format)"),
         ("+ / -", "change sample interval"),
         ("t", "cycle history window"),
         ("m", "toggle mouse capture"),
@@ -213,7 +234,7 @@ pub fn render(frame: &mut Frame, area: Rect, app: &mut App, theme: &Theme) {
 
     lines.push(section_line("MOUSE", section));
     lines.push(Line::from(Span::styled(
-        "Click tabs, footer buttons, history window buttons and export modal options. Scroll over the content to scroll or change the history window.",
+        "Click tabs, footer buttons, history window buttons, export source arrows, time/format cells and the Export button. Scroll over the content to scroll or change the history window.",
         theme.text(),
     )));
     lines.push(Line::from(Span::styled(
@@ -222,9 +243,9 @@ pub fn render(frame: &mut Frame, area: Rect, app: &mut App, theme: &Theme) {
     )));
     lines.push(Line::from(""));
 
-    lines.push(section_line("RAW TSV AND PDF", section));
+    lines.push(section_line("TSV AND PDF EXPORTS", section));
     lines.push(Line::from(Span::styled(
-        "r writes a raw TSV with a metadata header, one row per sample, top-level rails, and empty fields for missing values. e opens the PDF export modal. --raw <path> and --report <path> do the same from the command line.",
+        "PDF draws multi-page charts and summary tables. TSV preserves the selected source's data columns: recordings keep the full rails column, while rolling 48h history uses the compact schema. Both apply the chosen time scale. --raw <path> and --report <path> remain available from the command line.",
         theme.text(),
     )));
     lines.push(Line::from(""));
