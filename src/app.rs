@@ -1,3 +1,4 @@
+use std::collections::VecDeque;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, UNIX_EPOCH};
@@ -64,6 +65,8 @@ pub enum Action {
     ExportRun,
     ModalCancel,
 }
+
+pub const HISTORY_WINDOWS: [u64; 8] = [60, 300, 900, 3600, 21_600, 86_400, 172_800, 0];
 
 pub const EXPORT_WINDOWS: [(&str, Option<u64>); 8] = [
     ("1 min", Some(60)),
@@ -153,11 +156,18 @@ pub enum Modal {
     Error { title: String, message: String },
 }
 
+pub struct HistoryCache {
+    pub window_secs: u64,
+    pub samples: VecDeque<Sample>,
+}
+
 pub struct App {
     pub tab: Tab,
     pub prev_tab: Tab,
     pub sampler: Sampler,
     pub history: History,
+    pub history_secs: u64,
+    pub history_cache: Option<HistoryCache>,
     pub store: Option<HistoryStore>,
     pub snapshot: Option<Snapshot>,
     pub recorder: Recorder,
@@ -212,6 +222,8 @@ impl App {
             prev_tab: Tab::Overview,
             sampler,
             history: History::new(Duration::from_secs(options.history_secs.max(1))),
+            history_secs: options.history_secs.max(1),
+            history_cache: None,
             store,
             snapshot: None,
             recorder: Recorder::new(),
@@ -249,6 +261,7 @@ impl App {
         }
         let snapshot = self.sampler.tick();
         self.history.push(snapshot.sample.clone());
+        self.update_history_cache(&snapshot.sample);
         let mut store_error = None;
         if let Some(store) = self.store.as_mut() {
             if let Err(err) = store.record(&snapshot, self.sampler.system()) {
@@ -439,6 +452,7 @@ impl App {
             Action::SetWindow(secs) => {
                 self.window_secs = secs;
                 self.status = format!("window: {}", window_label(secs));
+                self.refresh_history_cache();
             }
             Action::ExportSourcePrev | Action::ExportSourceNext => {
                 if let Some(Modal::Export(mut export)) = self.modal.take() {
@@ -514,13 +528,72 @@ impl App {
     }
 
     fn cycle_window(&mut self) {
-        const WINDOWS: [u64; 5] = [60, 300, 900, 3600, 0];
-        let pos = WINDOWS
+        let pos = HISTORY_WINDOWS
             .iter()
             .position(|w| *w == self.window_secs)
             .unwrap_or(0);
-        self.window_secs = WINDOWS[(pos + 1) % WINDOWS.len()];
+        self.window_secs = HISTORY_WINDOWS[(pos + 1) % HISTORY_WINDOWS.len()];
         self.status = format!("window: {}", window_label(self.window_secs));
+        self.refresh_history_cache();
+    }
+
+    fn update_history_cache(&mut self, sample: &Sample) {
+        let Some(cache) = self.history_cache.as_mut() else {
+            return;
+        };
+        if cache.window_secs != self.window_secs {
+            return;
+        }
+        cache.samples.push_back(sample.clone());
+        let retention = if cache.window_secs == 0 {
+            store::RETENTION_SECS
+        } else {
+            cache.window_secs
+        };
+        let cutoff = sample
+            .ts
+            .checked_sub(Duration::from_secs(retention))
+            .unwrap_or(UNIX_EPOCH);
+        while cache.samples.front().is_some_and(|front| front.ts < cutoff) {
+            cache.samples.pop_front();
+        }
+    }
+
+    fn refresh_history_cache(&mut self) {
+        let needs_store =
+            self.store.is_some() && (self.window_secs == 0 || self.window_secs > self.history_secs);
+        if !needs_store {
+            self.history_cache = None;
+            return;
+        }
+        self.status = format!("loading {} history...", window_label(self.window_secs));
+        let secs = if self.window_secs == 0 {
+            None
+        } else {
+            Some(self.window_secs)
+        };
+        let Some(store) = self.store.as_mut() else {
+            self.history_cache = None;
+            return;
+        };
+        match store.samples_since(secs) {
+            Ok(samples) => {
+                let count = samples.len();
+                self.history_cache = Some(HistoryCache {
+                    window_secs: self.window_secs,
+                    samples: samples.into(),
+                });
+                self.status = format!(
+                    "history: {} ({} samples)",
+                    window_label(self.window_secs),
+                    count
+                );
+            }
+            Err(err) => {
+                self.history_cache = None;
+                self.status = format!("history unavailable: {err}");
+            }
+        }
     }
 
     fn scroll(&mut self, delta: i32) {
@@ -1073,6 +1146,42 @@ mod tests {
             }
             _ => panic!("expected export modal"),
         }
+    }
+
+    #[test]
+    fn long_history_window_loads_from_the_store() {
+        let nonce = std::time::SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or(Duration::ZERO)
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!("macpower-app-history-{nonce}"));
+        let mut app = App::new(
+            Sampler::demo(),
+            AppOptions {
+                interval_ms: 1000,
+                history_secs: 60,
+                window_secs: 60,
+                mouse_enabled: true,
+                ascii: false,
+                raw_path: None,
+                report_path: None,
+                history_dir: Some(root.clone()),
+            },
+        );
+        app.tick();
+        app.window_secs = 172_800;
+        app.refresh_history_cache();
+        assert_eq!(
+            app.history_cache.as_ref().map(|cache| cache.window_secs),
+            Some(172_800)
+        );
+        assert!(!app.history_cache.as_ref().unwrap().samples.is_empty());
+
+        app.window_secs = 60;
+        app.refresh_history_cache();
+        assert!(app.history_cache.is_none());
+        drop(app);
+        let _ = fs::remove_dir_all(root);
     }
 
     #[test]

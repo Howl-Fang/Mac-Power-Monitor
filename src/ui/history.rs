@@ -4,7 +4,7 @@ use ratatui::layout::{Alignment, Constraint, Layout, Rect};
 use ratatui::widgets::Paragraph;
 use ratatui::Frame;
 
-use crate::app::{window_label, Action, App};
+use crate::app::{window_label, Action, App, HISTORY_WINDOWS};
 use crate::history::{series_avg, Summary};
 use crate::model::{fmt_power_val, fmt_wh, plausible_dc_input_w, Sample};
 use crate::ui::theme::Theme;
@@ -22,7 +22,13 @@ pub fn render(frame: &mut Frame, area: Rect, app: &mut App, theme: &Theme) {
 
     render_window_buttons(frame, buttons, app, theme);
 
-    let samples: Vec<&Sample> = if app.window_secs == 0 {
+    let samples: Vec<&Sample> = if let Some(cache) = app
+        .history_cache
+        .as_ref()
+        .filter(|cache| cache.window_secs == app.window_secs)
+    {
+        cache.samples.iter().collect()
+    } else if app.window_secs == 0 {
         app.history.all()
     } else {
         app.history.window(Duration::from_secs(app.window_secs))
@@ -113,24 +119,17 @@ pub fn render(frame: &mut Frame, area: Rect, app: &mut App, theme: &Theme) {
 }
 
 fn render_window_buttons(frame: &mut Frame, area: Rect, app: &mut App, theme: &Theme) {
-    let buttons = [
-        ("1m", 60, " 1m "),
-        ("5m", 300, " 5m "),
-        ("15m", 900, " 15m "),
-        ("1h", 3600, " 1h "),
-        ("All", 0, " All "),
-    ];
-    let widths = [
-        Constraint::Length(6),
-        Constraint::Length(6),
-        Constraint::Length(7),
-        Constraint::Length(6),
-        Constraint::Length(6),
-        Constraint::Min(0),
-    ];
-    let [a, b, c, d, e, rest] = Layout::horizontal(widths).areas(area);
-    let rects = [a, b, c, d, e];
-    for (i, (_, secs, label)) in buttons.iter().enumerate() {
+    let labels: Vec<String> = HISTORY_WINDOWS
+        .iter()
+        .map(|secs| format!(" {} ", window_label(*secs)))
+        .collect();
+    let widths: Vec<Constraint> = labels
+        .iter()
+        .map(|label| Constraint::Length(label.chars().count() as u16))
+        .chain(std::iter::once(Constraint::Min(0)))
+        .collect();
+    let rects = Layout::horizontal(widths).split(area);
+    for (i, secs) in HISTORY_WINDOWS.iter().enumerate() {
         let selected = app.window_secs == *secs;
         let style = if selected {
             theme.selected()
@@ -138,7 +137,7 @@ fn render_window_buttons(frame: &mut Frame, area: Rect, app: &mut App, theme: &T
             theme.dim_text()
         };
         frame.render_widget(
-            Paragraph::new(*label)
+            Paragraph::new(labels[i].as_str())
                 .style(style)
                 .alignment(Alignment::Center),
             rects[i],
@@ -149,7 +148,7 @@ fn render_window_buttons(frame: &mut Frame, area: Rect, app: &mut App, theme: &T
         Paragraph::new("t cycle window")
             .style(theme.dim_text())
             .alignment(Alignment::Right),
-        rest,
+        rects[HISTORY_WINDOWS.len()],
     );
 }
 
