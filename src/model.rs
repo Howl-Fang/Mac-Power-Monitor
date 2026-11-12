@@ -211,6 +211,31 @@ pub fn fmt_battery_current(sample: &Sample) -> String {
     }
 }
 
+/// Reject DC-input readings that are physically impossible for the system
+/// load. SMC PDTR occasionally reports hundreds of watts for one sample
+/// around adapter connect/disconnect, and old recordings can contain them.
+pub fn plausible_dc_input_w(sample: &Sample) -> Option<f32> {
+    let w = sample.dc_in_w.filter(|w| w.is_finite() && *w >= 0.0)?;
+    if w <= 0.01 {
+        return Some(0.0);
+    }
+    if sample.source == PowerSource::Battery {
+        return None;
+    }
+    let system = sample
+        .system_w
+        .filter(|w| w.is_finite())
+        .unwrap_or(0.0)
+        .max(0.0);
+    let charging = sample
+        .battery_w
+        .filter(|w| w.is_finite())
+        .unwrap_or(0.0)
+        .max(0.0);
+    let expected = system + charging;
+    (w <= expected * 1.5 + 30.0).then_some(w)
+}
+
 pub fn fmt_power(w: Option<f32>) -> String {
     match w {
         Some(v) => fmt_power_val(v),
@@ -320,5 +345,42 @@ mod tests {
         assert_eq!(fmt_duration_min(Some(162)), "2:42");
         assert_eq!(fmt_duration_min(Some(-1)), "n/a");
         assert_eq!(fmt_duration_min(Some(1500)), "1d 01:00");
+    }
+
+    #[test]
+    fn rejects_impossible_dc_input_values() {
+        let battery = Sample {
+            source: PowerSource::Battery,
+            system_w: Some(6.7),
+            battery_w: Some(-6.7),
+            dc_in_w: Some(479.6),
+            ..Sample::default()
+        };
+        assert_eq!(plausible_dc_input_w(&battery), None);
+        assert_eq!(
+            plausible_dc_input_w(&Sample {
+                dc_in_w: Some(0.0),
+                ..Sample::default()
+            }),
+            Some(0.0)
+        );
+
+        let ac_spike = Sample {
+            source: PowerSource::Ac,
+            system_w: Some(39.0),
+            battery_w: Some(23.0),
+            dc_in_w: Some(173.7),
+            ..Sample::default()
+        };
+        assert_eq!(plausible_dc_input_w(&ac_spike), None);
+
+        let normal = Sample {
+            source: PowerSource::Ac,
+            system_w: Some(8.0),
+            battery_w: Some(40.0),
+            dc_in_w: Some(64.0),
+            ..Sample::default()
+        };
+        assert_eq!(plausible_dc_input_w(&normal), Some(64.0));
     }
 }

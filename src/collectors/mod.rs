@@ -608,9 +608,18 @@ fn pick_system_power(
 }
 
 fn pick_input(smc: &SmcValues, battery: &BatteryInfo) -> Option<f32> {
+    // PDTR can briefly report hundreds of watts while the adapter is
+    // disconnected or negotiating. On battery there is no DC input at all.
+    if battery.present && !battery.external_connected {
+        return None;
+    }
     smc.pdtr_w
-        .filter(|w| *w > 0.0)
-        .or_else(|| battery.fw_system_power_in_w.filter(|w| *w > 0.0))
+        .filter(|w| *w > 0.0 && plausible_input_w(*w, battery))
+        .or_else(|| {
+            battery
+                .fw_system_power_in_w
+                .filter(|w| *w > 0.0 && plausible_input_w(*w, battery))
+        })
         .or_else(|| {
             if battery.is_charging {
                 battery.power_w.filter(|w| *w > 0.0)
@@ -618,6 +627,21 @@ fn pick_input(smc: &SmcValues, battery: &BatteryInfo) -> Option<f32> {
                 None
             }
         })
+}
+
+fn plausible_input_w(w: f32, battery: &BatteryInfo) -> bool {
+    if !w.is_finite() || w < 0.0 {
+        return false;
+    }
+    if let Some(rated) = battery
+        .adapter_watts
+        .filter(|rated| rated.is_finite() && *rated > 0.0)
+    {
+        // Allow adapter/telemetry margin, but reject disconnected or
+        // mis-scaled readings far beyond what the adapter can deliver.
+        return w <= rated * 1.5 + 10.0;
+    }
+    w <= 1000.0
 }
 
 fn add_smc_rails(rails: &mut Vec<RailValue>, smc: &SmcValues) {
@@ -851,12 +875,48 @@ mod tests {
         let smc = SmcValues::default();
         let battery = BatteryInfo {
             present: true,
+            external_connected: true,
             is_charging: true,
             power_w: Some(23.0),
             fw_system_power_in_w: Some(64.0),
             ..BatteryInfo::default()
         };
         assert_eq!(pick_input(&smc, &battery), Some(64.0));
+    }
+
+    #[test]
+    fn input_is_none_on_battery_even_when_pdtr_spikes() {
+        let smc = SmcValues {
+            pdtr_w: Some(479.6),
+            ..SmcValues::default()
+        };
+        let battery = BatteryInfo {
+            present: true,
+            external_connected: false,
+            ..BatteryInfo::default()
+        };
+        assert_eq!(pick_input(&smc, &battery), None);
+    }
+
+    #[test]
+    fn input_rejects_values_above_the_adapter_rating() {
+        let smc = SmcValues {
+            pdtr_w: Some(173.7),
+            ..SmcValues::default()
+        };
+        let battery = BatteryInfo {
+            present: true,
+            external_connected: true,
+            adapter_watts: Some(65.0),
+            ..BatteryInfo::default()
+        };
+        assert_eq!(pick_input(&smc, &battery), None);
+
+        let normal = SmcValues {
+            pdtr_w: Some(64.3),
+            ..SmcValues::default()
+        };
+        assert_eq!(pick_input(&normal, &battery), Some(64.3));
     }
 
     #[test]

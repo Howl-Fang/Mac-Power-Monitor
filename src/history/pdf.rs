@@ -10,7 +10,9 @@ use printpdf::{
 
 use crate::history::raw::is_top_level_rail;
 use crate::history::{series_avg, MetricStats, Summary};
-use crate::model::{fmt_power_val, fmt_wh, RailSource, RailValue, Sample, SystemInfo};
+use crate::model::{
+    fmt_power_val, fmt_wh, plausible_dc_input_w, RailSource, RailValue, Sample, SystemInfo,
+};
 
 const PAGE_W_MM: f64 = 297.0;
 const PAGE_H_MM: f64 = 210.0;
@@ -141,7 +143,7 @@ fn build_page1(samples: &[&Sample], summary: &Summary, input: &ReportInput<'_>) 
         Series {
             label: "DC input".to_string(),
             color: rgb(0.95, 0.55, 0.12),
-            points: series_avg(samples, 420, |s| s.dc_in_w),
+            points: series_avg(samples, 420, plausible_dc_input_w),
         },
         Series {
             label: "Battery".to_string(),
