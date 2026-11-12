@@ -206,9 +206,15 @@ pub fn render(frame: &mut Frame, area: Rect, app: &mut App, theme: &Theme) {
         theme.text(),
     ));
     lines.push(line(
+        "History tab: ",
+        bold,
+        "1m/5m/15m/1h stay in the in-memory ring; 6h/24h/48h/All load from the rolling store and keep appending new samples. Series stack System, CPU, GPU, Display, DRAM, DC in, with the first series drawn on top. DC input is shown as 0 while on battery.",
+        theme.text(),
+    ));
+    lines.push(line(
         "Export: ",
         bold,
-        "e opens one page with a source selector and a time-scale x format grid. Arrow keys move the selected cell, Tab changes source, and Enter or the Export button writes the file into the current directory.",
+        "e opens one page with a source selector and a time-scale x format grid. Arrow keys move the selected cell, Tab changes source, and Enter or the Export button writes the file into the current directory. Esc or a click on Cancel closes the page.",
         theme.text(),
     ));
     lines.push(Line::from(""));
@@ -234,7 +240,7 @@ pub fn render(frame: &mut Frame, area: Rect, app: &mut App, theme: &Theme) {
 
     lines.push(section_line("MOUSE", section));
     lines.push(Line::from(Span::styled(
-        "Click tabs, footer buttons, history window buttons, export source arrows, time/format cells and the Export button. Scroll over the content to scroll or change the history window.",
+        "Click tabs, footer buttons, history window buttons, export source arrows, time/format cells, Export and Cancel. Scroll over the content to scroll or change the history window.",
         theme.text(),
     )));
     lines.push(Line::from(Span::styled(
@@ -245,7 +251,7 @@ pub fn render(frame: &mut Frame, area: Rect, app: &mut App, theme: &Theme) {
 
     lines.push(section_line("TSV AND PDF EXPORTS", section));
     lines.push(Line::from(Span::styled(
-        "PDF draws multi-page charts and summary tables. TSV preserves the selected source's data columns: recordings keep the full rails column, while rolling 48h history uses the compact schema. Both apply the chosen time scale. --raw <path> and --report <path> remain available from the command line.",
+        "PDF draws multi-page charts and summary tables; y-axes that cross zero get a labeled 0 baseline, and implausible DC-input spikes from SMC PDTR are filtered out. TSV preserves the selected source's data columns: recordings keep the full rails column, while rolling 48h history uses the compact schema. Both apply the chosen time scale. --raw <path> and --report <path> remain available from the command line.",
         theme.text(),
     )));
     lines.push(Line::from(""));
